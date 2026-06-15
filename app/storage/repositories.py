@@ -261,6 +261,7 @@ def save_exam_insight(
 def save_sync_run(
     session: Session,
     *,
+    source: str = "whoop",
     days: int,
     sleeps_saved: int,
     recoveries_saved: int,
@@ -271,6 +272,7 @@ def save_sync_run(
     message: str = "",
 ) -> SyncRun:
     run = SyncRun(
+        source=source,
         days=days,
         sleeps_saved=sleeps_saved,
         recoveries_saved=recoveries_saved,
@@ -289,3 +291,21 @@ def save_sync_run(
 
 def latest_sync_run(session: Session) -> SyncRun | None:
     return session.exec(select(SyncRun).order_by(desc(SyncRun.started_at))).first()
+
+
+def has_demo_data(session: Session) -> bool:
+    demo_marker = '"source":"demo-seed"'
+    sleep = session.exec(
+        select(WhoopSleep).where(WhoopSleep.raw_json.contains(demo_marker))
+    ).first()
+    if sleep is not None:
+        return True
+    recovery = session.exec(
+        select(WhoopRecovery).where(WhoopRecovery.raw_json.contains(demo_marker))
+    ).first()
+    if recovery is not None:
+        return True
+    cycle = session.exec(
+        select(WhoopCycle).where(WhoopCycle.raw_json.contains(demo_marker))
+    ).first()
+    return cycle is not None

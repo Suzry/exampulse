@@ -23,5 +23,5 @@ def init_db(db_engine=None) -> None:
 
 @contextmanager
 def get_session(db_engine=None) -> Iterator[Session]:
-    with Session(db_engine or engine) as session:
+    with Session(db_engine or engine, expire_on_commit=False) as session:
         yield session

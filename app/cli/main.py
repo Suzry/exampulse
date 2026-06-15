@@ -16,11 +16,12 @@ from app.core.analysis import ExamReadiness
 from app.core.models import Exam, WhoopCycle, WhoopRecovery, WhoopSleep
 from app.integrations.whoop_client import WhoopAPIError
 from app.integrations.whoop_oauth import OAuthError, run_local_oauth_flow
+from app.services.demo_seed_service import DemoSeedService
 from app.services.exam_service import ExamImportError, ExamService
 from app.services.insight_service import InsightService
 from app.services.sync_service import SyncService
 from app.storage.db import get_session, init_db
-from app.storage.repositories import latest_sync_run
+from app.storage.repositories import has_demo_data, latest_sync_run
 from app.utils.formatters import (
     format_bpm_delta,
     format_float,
@@ -50,6 +51,33 @@ def auth() -> None:
     except (OAuthError, OSError) as exc:
         console.print(f"[red]Auth failed:[/red] {exc}")
         raise typer.Exit(code=1) from exc
+
+
+@app.command()
+def demo_seed(
+    days: int = typer.Option(30, "--days", min=1, help="Days of demo history."),
+    seed: int = typer.Option(42, "--seed", help="Random seed for repeatable data."),
+    include_exams: bool = typer.Option(
+        True,
+        "--include-exams/--no-exams",
+        help="Also seed a small demo exam schedule.",
+    ),
+) -> None:
+    """Seed realistic offline WHOOP-like data without authentication."""
+    _ensure_db()
+    with get_session() as session:
+        summary = DemoSeedService(session).seed(
+            days=days,
+            seed=seed,
+            include_exams=include_exams,
+        )
+    console.print(
+        "[magenta]DEMO DATA seeded:[/magenta] "
+        f"{summary.sleeps_saved} sleeps, "
+        f"{summary.recoveries_saved} recoveries, "
+        f"{summary.cycles_saved} cycles, "
+        f"{summary.exams_saved} exams."
+    )
 
 
 @app.command()
@@ -105,11 +133,16 @@ def report(
     with get_session() as session:
         results = InsightService(session).generate(exam_name=exam)
         sync_run = latest_sync_run(session)
+        demo_data = has_demo_data(session) or bool(sync_run and sync_run.source == "demo")
 
     if not results:
         console.print("[yellow]No imported exams found. Showing demo output.[/yellow]")
         results = [_demo_result()]
-    _print_report(results, sync_run_message=_sync_message(sync_run))
+    _print_report(
+        results,
+        sync_run_message=_sync_message(sync_run),
+        demo_data=demo_data,
+    )
 
 
 @app.command()
@@ -153,6 +186,12 @@ def _risk_order(result: ExamReadiness) -> tuple[int, float]:
 def _sync_message(sync_run) -> str:
     if sync_run is None:
         return "whoop: no sync yet"
+    if sync_run.source == "demo":
+        return (
+            f"DEMO DATA: last seeded {sync_run.completed_at.isoformat() if sync_run.completed_at else 'unknown'} "
+            f"({sync_run.sleeps_saved} sleeps, {sync_run.recoveries_saved} recoveries, "
+            f"{sync_run.cycles_saved} cycles)"
+        )
     return (
         f"whoop: last sync {sync_run.completed_at.isoformat() if sync_run.completed_at else 'unknown'} "
         f"({sync_run.sleeps_saved} sleeps, {sync_run.recoveries_saved} recoveries, "
@@ -188,8 +227,13 @@ def _print_exams_table(exams: list[Exam]) -> None:
     console.print(table)
 
 
-def _print_report(results: list[ExamReadiness], sync_run_message: str) -> None:
-    console.print(Panel.fit("EXAMPULSE - EXAM READINESS", box=box.ASCII, style="bold"))
+def _print_report(
+    results: list[ExamReadiness], sync_run_message: str, demo_data: bool = False
+) -> None:
+    title = "EXAMPULSE - EXAM READINESS"
+    if demo_data:
+        title = f"{title}\nDEMO DATA"
+    console.print(Panel.fit(title, box=box.ASCII, style="bold"))
     console.print(f"[dim]{sync_run_message}[/dim]")
     console.print("[dim]matching sleep/recovery/cycle data against exams...[/dim]")
 

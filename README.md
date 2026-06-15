@@ -23,6 +23,7 @@ Then fill in `WHOOP_CLIENT_ID` and `WHOOP_CLIENT_SECRET` in `.env`.
 
 ```powershell
 exampulse auth
+exampulse demo-seed
 exampulse sync --days 30
 exampulse exams import exams.json
 exampulse exams list
@@ -30,8 +31,10 @@ exampulse report
 exampulse watch --every 30
 ```
 
-If the database is empty, `exampulse report` shows a clearly marked demo report
-so the terminal UI can be checked before WHOOP credentials are configured.
+For offline exploration, run `exampulse demo-seed` first. It generates 30 days
+of realistic WHOOP-like sleep, recovery, HRV, RHR, and cycle data, plus a small
+demo exam schedule. Reports generated from this seeded dataset are labeled
+`DEMO DATA`. This does not touch the real WHOOP OAuth or sync flow.
 
 ## Notes
 
