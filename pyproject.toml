@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "exampulse"
+version = "0.1.0"
+description = "CLI-first WHOOP exam readiness analyzer"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "apscheduler>=3.10.4",
+  "httpx>=0.27.0",
+  "python-dotenv>=1.0.1",
+  "rich>=13.7.1",
+  "sqlmodel>=0.0.22",
+  "typer>=0.12.3",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2.0",
+]
+
+[project.scripts]
+exampulse = "app.cli.main:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
