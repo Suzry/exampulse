@@ -8,12 +8,19 @@ from typing import Optional
 import typer
 from rich import box
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
 from app.core.analysis import ExamReadiness
 from app.core.models import Exam, WhoopCycle, WhoopRecovery, WhoopSleep
+from app.core.stress import (
+    StressResult,
+    compute_exam_stress_index,
+    stress_bar,
+    top_stress_drivers,
+)
 from app.integrations.whoop_client import WhoopAPIError
 from app.integrations.whoop_oauth import OAuthError, run_local_oauth_flow
 from app.services.demo_seed_service import DemoSeedService
@@ -35,6 +42,15 @@ from app.utils.formatters import (
     format_percent,
     format_percent_delta,
     minutes_to_hm,
+)
+from app.utils.terminal_ui import (
+    compact_duration,
+    format_compact_datetime,
+    horizontal_rule,
+    make_bar,
+    sleep_debt_marker,
+    status_color,
+    truncate,
 )
 
 console = Console()
@@ -134,6 +150,11 @@ def list_exam_command() -> None:
 @app.command()
 def report(
     exam: Optional[str] = typer.Option(None, "--exam", help="Filter by course name."),
+    compact: bool = typer.Option(
+        True,
+        "--compact/--classic",
+        help="Use the compact dashboard layout or the classic boxed report.",
+    ),
 ) -> None:
     """Generate the terminal readiness report."""
     _ensure_db()
@@ -145,15 +166,24 @@ def report(
     if not results:
         console.print("[yellow]No imported exams found. Showing demo output.[/yellow]")
         results = [_demo_result()]
-    _print_report(
-        results,
-        sync_run_message=_sync_message(sync_run),
-        demo_data=demo_data,
-    )
+    if compact:
+        _print_compact_report(results, sync_run=sync_run, demo_data=demo_data)
+    else:
+        _print_report(
+            results,
+            sync_run_message=_sync_message(sync_run),
+            demo_data=demo_data,
+        )
 
 
 @app.command()
-def today() -> None:
+def today(
+    compact: bool = typer.Option(
+        True,
+        "--compact/--classic",
+        help="Use the compact dashboard layout or the classic boxed status.",
+    ),
+) -> None:
     """Show the next exam and the latest available WHOOP context."""
     _ensure_db()
     now = utc_now()
@@ -168,15 +198,27 @@ def today() -> None:
         console.print("[yellow]No upcoming exams found.[/yellow]")
         return
 
-    console.print(
-        _today_panel(
+    sleep = _latest_sleep(sleeps, now)
+    recovery = _latest_recovery(recoveries, sleeps, now)
+    cycle = _latest_cycle(cycles, now)
+    if compact:
+        _print_compact_today(
             exam=next_exam,
             now=now,
-            sleep=_latest_sleep(sleeps, now),
-            recovery=_latest_recovery(recoveries, sleeps, now),
-            cycle=_latest_cycle(cycles, now),
+            sleep=sleep,
+            recovery=recovery,
+            cycle=cycle,
         )
-    )
+    else:
+        console.print(
+            _today_panel(
+                exam=next_exam,
+                now=now,
+                sleep=sleep,
+                recovery=recovery,
+                cycle=cycle,
+            )
+        )
 
 
 @app.command()
@@ -229,6 +271,11 @@ def _remaining_text(exam_at: datetime, now: datetime) -> str:
     hours_total = (seconds + 3599) // 3600
     days, hours = divmod(hours_total, 24)
     return f"{days}d {hours}h"
+
+
+def _section(title: str, width: int = 60) -> None:
+    console.print(f"\n[bold cyan]{escape(title)}[/bold cyan]")
+    console.print(f"[dim]{horizontal_rule(width)}[/dim]")
 
 
 def _latest_sleep(sleeps: list[WhoopSleep], now: datetime) -> WhoopSleep | None:
@@ -292,6 +339,81 @@ def _recovery_text(recovery: WhoopRecovery | None) -> str:
         else "RHR n/a",
     ]
     return " | ".join(parts)
+
+
+def _recovery_compact_text(recovery: WhoopRecovery | None) -> str:
+    if recovery is None:
+        return "n/a"
+    score = "n/a" if recovery.recovery_score is None else f"{recovery.recovery_score:.0f}%"
+    bar = make_bar(recovery.recovery_score)
+    return f"{score:<4} [green]{bar}[/green]"
+
+
+def _sleep_debt_marker(value: float | int | None) -> str:
+    if value is None:
+        return ""
+    marker = sleep_debt_marker(value)
+    if value < -90:
+        return f"[red]{marker}[/red]"
+    if value < 0:
+        return f"[yellow]{marker}[/yellow]"
+    return f"[green]{marker}[/green]"
+
+
+def _compact_sync_line(sync_run) -> str:
+    if sync_run is None:
+        return "no sync yet"
+    when = (
+        format_compact_datetime(sync_run.completed_at)
+        if sync_run.completed_at
+        else "unknown"
+    )
+    return (
+        f"{sync_run.sleeps_saved} sleeps, "
+        f"{sync_run.recoveries_saved} recoveries, "
+        f"{sync_run.cycles_saved} cycles | last sync {when}"
+    )
+
+
+def _compact_flags(result: ExamReadiness) -> str:
+    if result.readiness_label == "UPCOMING":
+        return "pending night data"
+    if not result.flags:
+        return "n/a"
+    return ", ".join(result.flags)
+
+
+def _print_compact_today(
+    *,
+    exam: Exam,
+    now: datetime,
+    sleep: WhoopSleep | None,
+    recovery: WhoopRecovery | None,
+    cycle: WhoopCycle | None,
+) -> None:
+    _section("TODAY", width=40)
+    console.print(f"[dim]{'next exam':<13}[/dim] {escape(exam.course)}")
+    console.print(f"[dim]{'time':<13}[/dim] {format_compact_datetime(exam.exam_at)}")
+    console.print(f"[dim]{'remaining':<13}[/dim] {_remaining_text(exam.exam_at, now)}")
+    console.print(
+        f"[dim]{'stress monitor':<15}[/dim] "
+        "[cyan]pending night-before data[/cyan]"
+    )
+
+    _section("LATEST WHOOP", width=40)
+    console.print(f"[dim]{'recovery':<13}[/dim] {_recovery_compact_text(recovery)}")
+    console.print(
+        f"[dim]{'sleep':<13}[/dim] "
+        f"{compact_duration(sleep.total_sleep_minutes if sleep else None)}"
+    )
+    console.print(
+        f"[dim]{'strain':<13}[/dim] "
+        f"{format_float(cycle.strain if cycle else None)}"
+    )
+    console.print(
+        "\n[dim]reminder[/dim] Full analysis unlocks after exam time + "
+        "night-before data."
+    )
 
 
 def _today_panel(
@@ -368,6 +490,189 @@ def _print_exams_table(exams: list[Exam]) -> None:
             exam.notes,
         )
     console.print(table)
+
+
+def _print_compact_report(results: list[ExamReadiness], sync_run, demo_data: bool = False) -> None:
+    ranked = sorted(results, key=_risk_order)
+    analyzed = [result for result in ranked if result.readiness_label != "UPCOMING"]
+    upcoming = [result for result in ranked if result.readiness_label == "UPCOMING"]
+
+    console.print(Text.assemble(("[whoop] ", "cyan"), _compact_sync_line(sync_run)))
+    console.print(
+        Text.assemble(
+            ("[exams] ", "cyan"),
+            f"{len(results)} loaded | {len(analyzed)} analyzed | {len(upcoming)} upcoming",
+        )
+    )
+    run_label = "demo scoring" if demo_data else "scoring"
+    console.print(
+        Text.assemble(
+            ("[run] ", "cyan"),
+            f"{run_label} exams vs personal baseline ...",
+        )
+    )
+
+    _section("EXAM READINESS")
+    console.print(
+        f"[dim]{'score':>5}   {'risk':<10} {'course':<30} {'flags'}[/dim]"
+    )
+    for result in ranked:
+        label = result.readiness_label.casefold()
+        score = "--" if result.readiness_score is None else f"{result.readiness_score:.0f}"
+        console.print(
+            Text.assemble(
+                (f"{score:>5}   ", status_color(result.readiness_label)),
+                (f"{label:<10} ", status_color(result.readiness_label)),
+                f"{truncate(result.exam.course, 30):<30} ",
+                truncate(_compact_flags(result), 24),
+            )
+        )
+
+    if analyzed:
+        _section("DETAIL")
+        for index, result in enumerate(analyzed):
+            if index:
+                console.print()
+            _print_compact_exam_detail(result)
+
+    if ranked:
+        _section("EXAM STRESS MONITOR")
+        for index, result in enumerate(ranked):
+            if index:
+                console.print()
+            _print_compact_stress_monitor(result)
+
+    if upcoming:
+        _section("UPCOMING")
+        now = utc_now()
+        for index, result in enumerate(upcoming):
+            if index:
+                console.print()
+            _print_compact_upcoming(result.exam, now)
+
+
+def _print_compact_exam_detail(result: ExamReadiness) -> None:
+    label = result.readiness_label.casefold()
+    score = "--" if result.readiness_score is None else f"{result.readiness_score:.0f}"
+    sleep_minutes = result.sleep.total_sleep_minutes if result.sleep else None
+    recovery_score = result.recovery.recovery_score if result.recovery else None
+    sleep_line = (
+        f"{compact_duration(sleep_minutes)} vs "
+        f"{compact_duration(result.baseline_sleep_minutes)} baseline"
+    )
+    sleep_debt = compact_duration(result.sleep_debt_minutes, signed=True)
+
+    console.print(f"[bold]{escape(result.exam.course)}[/bold]")
+    console.print(f"[dim]{'time':<10}[/dim] {format_compact_datetime(result.exam.exam_at)}")
+    console.print(
+        f"[dim]{'sleep':<10}[/dim] {sleep_line:<30} "
+        f"{sleep_debt} {_sleep_debt_marker(result.sleep_debt_minutes)}"
+    )
+    console.print(
+        f"[dim]{'recovery':<10}[/dim] "
+        f"{format_percent(recovery_score):<5} [green]{make_bar(recovery_score)}[/green]"
+    )
+    console.print(f"[dim]{'hrv':<10}[/dim] {format_percent_delta(result.hrv_delta_percent)}")
+    console.print(f"[dim]{'rhr':<10}[/dim] {format_bpm_delta(result.rhr_delta_bpm)}")
+    console.print(
+        f"[dim]{'strain':<10}[/dim] "
+        f"{format_float(result.previous_cycle.strain if result.previous_cycle else None)}"
+    )
+    console.print(
+        f"\n[dim]{'readiness':<10}[/dim] "
+        f"[{status_color(result.readiness_label)}]{label} {score}[/]"
+    )
+    console.print(
+        f"[dim]{'bar':<10}[/dim] "
+        f"[{status_color(result.readiness_label)}]{make_bar(result.readiness_score)}[/]"
+    )
+    console.print(f"\n[dim]{'note':<10}[/dim] {escape(result.summary)}")
+
+
+def _stress_color(label: str) -> str:
+    normalized = label.casefold()
+    if normalized == "calm":
+        return "green"
+    if normalized == "mild load":
+        return "yellow"
+    if normalized == "elevated":
+        return "yellow"
+    if normalized == "high load":
+        return "red"
+    return "dim"
+
+
+def _stress_component_lookup(stress: StressResult) -> dict[str, str]:
+    return {component.name: component.label for component in stress.components}
+
+
+def _print_compact_stress_monitor(result: ExamReadiness) -> None:
+    console.print(f"[bold]{escape(result.exam.course)}[/bold]")
+    if result.readiness_label == "UPCOMING":
+        console.print(
+            f"[dim]{'status':<10}[/dim] "
+            "[cyan]pending night-before WHOOP data[/cyan]"
+        )
+        return
+
+    stress = compute_exam_stress_index(result)
+    if stress is None:
+        console.print(f"[dim]{'status':<10}[/dim] n/a")
+        return
+
+    color = _stress_color(stress.label)
+    labels = _stress_component_lookup(stress)
+    recovery_score = result.recovery.recovery_score if result.recovery else None
+    previous_strain = result.previous_cycle.strain if result.previous_cycle else None
+
+    console.print(
+        f"[dim]{'load':<10}[/dim] "
+        f"[{color}]{stress.label} {stress.score}/100[/]    "
+        f"[{color}]{stress_bar(stress.score)}[/]"
+    )
+    console.print(
+        f"[dim]{'sleep':<10}[/dim] "
+        f"{compact_duration(result.sleep_debt_minutes, signed=True):<18} "
+        f"{labels['sleep']}"
+    )
+    console.print(
+        f"[dim]{'recovery':<10}[/dim] "
+        f"{format_percent(recovery_score):<18} {labels['recovery']}"
+    )
+    console.print(
+        f"[dim]{'hrv':<10}[/dim] "
+        f"{format_percent_delta(result.hrv_delta_percent):<18} {labels['hrv']}"
+    )
+    console.print(
+        f"[dim]{'rhr':<10}[/dim] "
+        f"{format_bpm_delta(result.rhr_delta_bpm):<18} {labels['rhr']}"
+    )
+    console.print(
+        f"[dim]{'strain':<10}[/dim] "
+        f"{format_float(previous_strain):<18} {labels['strain']}"
+    )
+
+    drivers = top_stress_drivers(stress.components)
+    console.print(f"\n[dim]{'drivers':<10}[/dim]")
+    if drivers:
+        for driver in drivers:
+            console.print(f"- {driver.name}: {driver.points}/{driver.max_points}")
+    else:
+        console.print("- no major physiological load drivers")
+    console.print(
+        f"\n[dim]{'note':<10}[/dim] This is a physiological load estimate, "
+        "not a mental stress diagnosis."
+    )
+
+
+def _print_compact_upcoming(exam: Exam, now: datetime) -> None:
+    console.print(f"[bold]{escape(exam.course)}[/bold]")
+    console.print(f"[dim]{'time':<10}[/dim] {format_compact_datetime(exam.exam_at)}")
+    console.print(f"[dim]{'remaining':<10}[/dim] {_remaining_text(exam.exam_at, now)}")
+    console.print(
+        f"[dim]{'status':<10}[/dim] "
+        "[cyan]analysis pending night-before WHOOP data[/cyan]"
+    )
 
 
 def _print_report(

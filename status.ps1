@@ -42,9 +42,9 @@ Write-Host "`n[1/3] Syncing WHOOP data..." -ForegroundColor Yellow
 Invoke-Exampulse -Arguments @("sync", "--days", "30")
 
 Write-Host "`n[2/3] Today's status..." -ForegroundColor Yellow
-Invoke-Exampulse -Arguments @("today")
+Invoke-Exampulse -Arguments @("today", "--compact")
 
 Write-Host "`n[3/3] Full report..." -ForegroundColor Yellow
-Invoke-Exampulse -Arguments @("report")
+Invoke-Exampulse -Arguments @("report", "--compact")
 
 Write-Host "`nDone." -ForegroundColor Green
