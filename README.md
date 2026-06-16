@@ -31,6 +31,18 @@ exampulse report
 exampulse watch --every 30
 ```
 
+## Daily usage on Windows
+
+Open PowerShell in the project root and run:
+
+```powershell
+.\status.ps1
+```
+
+The script uses `.\.venv\Scripts\python.exe` directly, syncs WHOOP data, shows
+today's next-exam status, and prints the full report. ngrok is only needed when
+running `exampulse auth` again. Normal daily usage does not require ngrok.
+
 For offline exploration, run `exampulse demo-seed` first. It generates 30 days
 of realistic WHOOP-like sleep, recovery, HRV, RHR, and cycle data, plus a small
 demo exam schedule. Reports generated from this seeded dataset are labeled

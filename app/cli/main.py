@@ -21,7 +21,14 @@ from app.services.exam_service import ExamImportError, ExamService
 from app.services.insight_service import InsightService
 from app.services.sync_service import SyncService
 from app.storage.db import get_session, init_db
-from app.storage.repositories import has_demo_data, latest_sync_run
+from app.storage.repositories import (
+    has_demo_data,
+    latest_sync_run,
+    list_cycles,
+    list_recoveries,
+    list_sleeps,
+)
+from app.utils.time import to_utc, utc_now
 from app.utils.formatters import (
     format_bpm_delta,
     format_float,
@@ -146,6 +153,33 @@ def report(
 
 
 @app.command()
+def today() -> None:
+    """Show the next exam and the latest available WHOOP context."""
+    _ensure_db()
+    now = utc_now()
+    with get_session() as session:
+        exams = ExamService(session).list()
+        sleeps = list_sleeps(session)
+        recoveries = list_recoveries(session)
+        cycles = list_cycles(session)
+
+    next_exam = _next_upcoming_exam(exams, now)
+    if next_exam is None:
+        console.print("[yellow]No upcoming exams found.[/yellow]")
+        return
+
+    console.print(
+        _today_panel(
+            exam=next_exam,
+            now=now,
+            sleep=_latest_sleep(sleeps, now),
+            recovery=_latest_recovery(recoveries, sleeps, now),
+            cycle=_latest_cycle(cycles, now),
+        )
+    )
+
+
+@app.command()
 def watch(
     every: int = typer.Option(30, "--every", min=1, help="Sync interval in minutes."),
 ) -> None:
@@ -178,9 +212,115 @@ def watch(
 
 
 def _risk_order(result: ExamReadiness) -> tuple[int, float]:
-    order = {"LOW": 0, "MODERATE": 1, "GOOD": 2, "UNKNOWN": 3}
+    order = {"LOW": 0, "MODERATE": 1, "GOOD": 2, "UNKNOWN": 3, "UPCOMING": 4}
     score = result.readiness_score if result.readiness_score is not None else 999
     return order.get(result.readiness_label, 3), float(score)
+
+
+def _next_upcoming_exam(exams: list[Exam], now: datetime) -> Exam | None:
+    upcoming = [exam for exam in exams if to_utc(exam.exam_at) > now]
+    if not upcoming:
+        return None
+    return min(upcoming, key=lambda exam: to_utc(exam.exam_at))
+
+
+def _remaining_text(exam_at: datetime, now: datetime) -> str:
+    seconds = max(0, int((to_utc(exam_at) - now).total_seconds()))
+    hours_total = (seconds + 3599) // 3600
+    days, hours = divmod(hours_total, 24)
+    return f"{days}d {hours}h"
+
+
+def _latest_sleep(sleeps: list[WhoopSleep], now: datetime) -> WhoopSleep | None:
+    available = [
+        sleep
+        for sleep in sleeps
+        if sleep.score_state == "SCORED" and to_utc(sleep.end) <= now
+    ]
+    if not available:
+        return None
+    main_sleeps = [sleep for sleep in available if not sleep.nap]
+    return max(main_sleeps or available, key=lambda sleep: to_utc(sleep.end))
+
+
+def _latest_recovery(
+    recoveries: list[WhoopRecovery],
+    sleeps: list[WhoopSleep],
+    now: datetime,
+) -> WhoopRecovery | None:
+    sleeps_by_id = {sleep.id: sleep for sleep in sleeps}
+    linked = [
+        recovery
+        for recovery in recoveries
+        if recovery.score_state == "SCORED"
+        and recovery.sleep_id in sleeps_by_id
+        and to_utc(sleeps_by_id[recovery.sleep_id].end) <= now
+    ]
+    if linked:
+        return max(
+            linked,
+            key=lambda recovery: to_utc(sleeps_by_id[recovery.sleep_id].end),
+        )
+
+    scored = [recovery for recovery in recoveries if recovery.score_state == "SCORED"]
+    if not scored:
+        return None
+    return max(scored, key=lambda recovery: recovery.cycle_id)
+
+
+def _latest_cycle(cycles: list[WhoopCycle], now: datetime) -> WhoopCycle | None:
+    available = [
+        cycle
+        for cycle in cycles
+        if cycle.score_state == "SCORED"
+        and cycle.end is not None
+        and to_utc(cycle.end) <= now
+    ]
+    if not available:
+        return None
+    return max(available, key=lambda cycle: to_utc(cycle.end))
+
+
+def _recovery_text(recovery: WhoopRecovery | None) -> str:
+    if recovery is None:
+        return "n/a"
+    parts = [
+        format_percent(recovery.recovery_score),
+        f"HRV {format_float(recovery.hrv_rmssd_milli)} ms",
+        f"RHR {recovery.resting_heart_rate} bpm"
+        if recovery.resting_heart_rate is not None
+        else "RHR n/a",
+    ]
+    return " | ".join(parts)
+
+
+def _today_panel(
+    *,
+    exam: Exam,
+    now: datetime,
+    sleep: WhoopSleep | None,
+    recovery: WhoopRecovery | None,
+    cycle: WhoopCycle | None,
+) -> Panel:
+    table = Table.grid(padding=(0, 2))
+    table.add_column(style="bold")
+    table.add_column()
+    table.add_row("Next exam", exam.course)
+    table.add_row("Time", exam.exam_at.isoformat())
+    table.add_row("Remaining", _remaining_text(exam.exam_at, now))
+    table.add_row("Notes", exam.notes or "n/a")
+    table.add_row("Latest recovery", _recovery_text(recovery))
+    table.add_row(
+        "Latest sleep",
+        minutes_to_hm(sleep.total_sleep_minutes if sleep else None),
+    )
+    table.add_row("Latest strain", format_float(cycle.strain if cycle else None))
+    table.add_row(
+        "Reminder",
+        "Full exam analysis is only available after the exam time and "
+        "night-before WHOOP data exists.",
+    )
+    return Panel(table, title="TODAY", box=box.ASCII, border_style="cyan")
 
 
 def _sync_message(sync_run) -> str:
@@ -200,6 +340,8 @@ def _sync_message(sync_run) -> str:
 
 
 def _readiness_text(result: ExamReadiness) -> Text:
+    if result.readiness_label == "UPCOMING":
+        return Text("UPCOMING", style="bold cyan")
     score = "n/a" if result.readiness_score is None else f"{result.readiness_score:.0f}"
     label = f"{result.readiness_label} {score}"
     style = {
@@ -207,6 +349,7 @@ def _readiness_text(result: ExamReadiness) -> Text:
         "MODERATE": "bold yellow",
         "GOOD": "bold green",
         "UNKNOWN": "dim",
+        "UPCOMING": "bold cyan",
     }.get(result.readiness_label, "dim")
     return Text(label, style=style)
 
@@ -264,6 +407,21 @@ def _print_report(
 
 
 def _detail_panel(result: ExamReadiness) -> Panel:
+    if result.readiness_label == "UPCOMING":
+        lines = [
+            f"Course:       {result.exam.course}",
+            f"Time:         {result.exam.exam_at.isoformat()}",
+            f"Notes:        {result.exam.notes or 'n/a'}",
+            "",
+            result.summary,
+        ]
+        return Panel(
+            "\n".join(lines),
+            title=f"DETAIL - {result.exam.course}",
+            box=box.ASCII,
+            border_style="cyan",
+        )
+
     sleep_minutes = result.sleep.total_sleep_minutes if result.sleep else None
     baseline = result.baseline_sleep_minutes
     lines = [

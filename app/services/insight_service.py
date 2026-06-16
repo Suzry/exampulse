@@ -3,7 +3,34 @@ from __future__ import annotations
 from sqlmodel import Session
 
 from app.core.analysis import ExamReadiness, analyze_exam
+from app.core.models import Exam
 from app.storage import repositories
+from app.utils.time import to_utc, utc_now
+
+UPCOMING_EXAM_MESSAGE = (
+    "Analysis will be available after WHOOP data exists for the night before this exam."
+)
+
+
+def _upcoming_result(exam: Exam) -> ExamReadiness:
+    return ExamReadiness(
+        exam=exam,
+        sleep=None,
+        recovery=None,
+        previous_cycle=None,
+        baseline_sleep_minutes=None,
+        baseline_recovery_score=None,
+        baseline_hrv=None,
+        baseline_rhr=None,
+        sleep_debt_minutes=None,
+        recovery_delta=None,
+        hrv_delta_percent=None,
+        rhr_delta_bpm=None,
+        readiness_score=None,
+        readiness_label="UPCOMING",
+        flags=[],
+        summary=UPCOMING_EXAM_MESSAGE,
+    )
 
 
 class InsightService:
@@ -20,10 +47,17 @@ class InsightService:
         recoveries = repositories.list_recoveries(self.session)
         cycles = repositories.list_cycles(self.session)
 
-        results = [
-            analyze_exam(exam, sleeps=sleeps, recoveries=recoveries, cycles=cycles)
-            for exam in exams
-        ]
+        now = utc_now()
+        results = []
+        for exam in exams:
+            if to_utc(exam.exam_at) > now:
+                results.append(_upcoming_result(exam))
+            else:
+                results.append(
+                    analyze_exam(
+                        exam, sleeps=sleeps, recoveries=recoveries, cycles=cycles
+                    )
+                )
         for result in results:
             if result.exam.id is not None:
                 repositories.save_exam_insight(
