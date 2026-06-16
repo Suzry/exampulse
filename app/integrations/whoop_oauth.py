@@ -92,7 +92,6 @@ def run_local_oauth_flow(
         raise OAuthError("Set WHOOP_CLIENT_ID and WHOOP_CLIENT_SECRET in `.env` first.")
 
     state = secrets.token_urlsafe(32)
-    parsed_redirect = urlparse(settings.whoop_redirect_uri)
     result: dict[str, str] = {}
 
     class CallbackHandler(BaseHTTPRequestHandler):
@@ -123,7 +122,8 @@ def run_local_oauth_flow(
                 b"</body></html>"
             )
 
-    server = HTTPServer((parsed_redirect.hostname or "localhost", settings.callback_port), CallbackHandler)
+    # The ngrok public URL is the OAuth redirect URI, not the local bind address.
+    server = HTTPServer(("127.0.0.1", 8711), CallbackHandler)
     auth_url = build_authorization_url(settings, state)
     console.print("Opening WHOOP authorization page...")
     console.print(f"Callback: {settings.whoop_redirect_uri}")
