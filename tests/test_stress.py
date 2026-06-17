@@ -88,13 +88,17 @@ def test_future_exam_does_not_compute_stress() -> None:
 
 def test_top_stress_drivers_returns_highest_components() -> None:
     components = [
-        StressComponent("sleep", 10, 25, "mild pressure"),
-        StressComponent("recovery", 25, 25, "high pressure"),
-        StressComponent("hrv", 0, 20, "neutral"),
-        StressComponent("rhr", 14, 20, "elevated pressure"),
-        StressComponent("strain", 6, 10, "moderate"),
+        StressComponent("sleep_debt", 10, 25, "mild pressure", "1h below baseline"),
+        StressComponent("recovery_drop", 25, 25, "high pressure", "recovery below 30%"),
+        StressComponent("hrv_pressure", 0, 20, "neutral", "no meaningful drop"),
+        StressComponent("rhr_elevation", 14, 20, "elevated pressure", "+8 bpm"),
+        StressComponent("strain_load", 6, 10, "moderate", "previous strain 12.1"),
     ]
 
     drivers = top_stress_drivers(components, limit=3)
 
-    assert [driver.name for driver in drivers] == ["recovery", "rhr", "sleep"]
+    assert [driver.name for driver in drivers] == [
+        "recovery_drop",
+        "rhr_elevation",
+        "sleep_debt",
+    ]

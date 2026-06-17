@@ -6,18 +6,58 @@ report that compares the night before each exam against your baseline.
 
 ## Setup
 
+Windows:
+
 ```powershell
-pip install -e ".[dev]"
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -U pip
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 Copy-Item .env.example .env
 ```
 
-Create a WHOOP app in the Developer Dashboard and set the redirect URI to:
+macOS/Linux:
 
-```text
-http://localhost:8711/callback
+```bash
+python3 -m venv .venv
+./.venv/bin/python -m pip install -U pip
+./.venv/bin/python -m pip install -e ".[dev]"
+cp .env.example .env
 ```
 
-Then fill in `WHOOP_CLIENT_ID` and `WHOOP_CLIENT_SECRET` in `.env`.
+## WHOOP OAuth setup
+
+Create a WHOOP app in the Developer Dashboard:
+
+```text
+https://developer-dashboard.whoop.com
+```
+
+The app needs a public HTTPS redirect URL. For local development, start an
+ngrok tunnel to Exampulse's callback server:
+
+```bash
+ngrok http 8711
+```
+
+Copy the HTTPS forwarding URL from ngrok and add `/callback` to the end. Use
+that exact value as the redirect URI in the WHOOP Developer Dashboard and in
+your local `.env`:
+
+```text
+WHOOP_REDIRECT_URI=https://your-ngrok-url.ngrok-free.dev/callback
+```
+
+Then fill in `WHOOP_CLIENT_ID` and `WHOOP_CLIENT_SECRET` in `.env` from the
+WHOOP app credentials.
+
+Run the first-time authorization while ngrok is still running:
+
+```bash
+exampulse auth
+```
+
+After authorization succeeds, normal daily commands do not need ngrok unless
+you re-run `exampulse auth`.
 
 ## Commands
 
@@ -45,6 +85,23 @@ The script uses `.\.venv\Scripts\python.exe` directly, syncs WHOOP data, shows
 today's compact next-exam status, and prints the compact report. ngrok is only
 needed when running `exampulse auth` again. Normal daily usage does not require
 ngrok.
+
+## Daily usage on macOS/Linux
+
+Open Terminal in the project root and run:
+
+```bash
+chmod +x ./status.sh
+./status.sh
+```
+
+The script uses `./.venv/bin/python` directly, syncs WHOOP data, shows today's
+compact next-exam status, and prints the compact report.
+
+If you move this project from Windows to macOS, do not reuse the Windows
+`.venv` folder. Create a fresh virtual environment on the Mac, then copy or
+recreate `.env`. You can copy `exampulse.db` if you want to keep the local
+SQLite data.
 
 For offline exploration, run `exampulse demo-seed` first. It generates 30 days
 of realistic WHOOP-like sleep, recovery, HRV, RHR, and cycle data, plus a small

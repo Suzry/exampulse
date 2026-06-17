@@ -45,6 +45,7 @@ from app.utils.formatters import (
 )
 from app.utils.terminal_ui import (
     compact_duration,
+    extract_room_from_notes,
     format_compact_datetime,
     horizontal_rule,
     make_bar,
@@ -378,9 +379,40 @@ def _compact_sync_line(sync_run) -> str:
 def _compact_flags(result: ExamReadiness) -> str:
     if result.readiness_label == "UPCOMING":
         return "pending night data"
-    if not result.flags:
-        return "n/a"
-    return ", ".join(result.flags)
+    stress = _stress_for_result(result)
+    if stress:
+        drivers = top_stress_drivers(stress.components, limit=2)
+        if drivers:
+            return ", ".join(_driver_display_name(driver.name) for driver in drivers)
+    if result.flags:
+        return ", ".join(result.flags)
+    return "no major flags"
+
+
+def _stress_for_result(result: ExamReadiness) -> StressResult | None:
+    return compute_exam_stress_index(result)
+
+
+def _stress_level_text(stress: StressResult | None) -> str:
+    if stress is None:
+        return "upcoming"
+    return stress.label
+
+
+def _stress_score_text(stress: StressResult | None) -> str:
+    if stress is None:
+        return "--"
+    return f"{stress.score}"
+
+
+def _driver_display_name(name: str) -> str:
+    return {
+        "sleep_debt": "sleep debt",
+        "recovery_drop": "recovery drop",
+        "hrv_pressure": "HRV pressure",
+        "rhr_elevation": "RHR elevation",
+        "strain_load": "strain load",
+    }.get(name, name.replace("_", " "))
 
 
 def _print_compact_today(
@@ -501,28 +533,38 @@ def _print_compact_report(results: list[ExamReadiness], sync_run, demo_data: boo
     console.print(
         Text.assemble(
             ("[exams] ", "cyan"),
-            f"{len(results)} loaded | {len(analyzed)} analyzed | {len(upcoming)} upcoming",
+            f"exams.json -> {len(results)} exams, "
+            f"{len(analyzed)} analyzed, {len(upcoming)} upcoming",
         )
     )
     run_label = "demo scoring" if demo_data else "scoring"
     console.print(
         Text.assemble(
             ("[run] ", "cyan"),
-            f"{run_label} exams vs personal baseline ...",
+            f"{run_label} each exam vs 14-day personal baseline ...",
+        )
+    )
+    console.print(
+        Text.assemble(
+            ("[run] ", "cyan"),
+            "estimating night-before physiological load ...",
         )
     )
 
-    _section("EXAM READINESS")
+    _section("EXAM STRESS / READINESS")
+    console.print("[dim]night-before physiology vs personal baseline[/dim]")
     console.print(
-        f"[dim]{'score':>5}   {'risk':<10} {'course':<30} {'flags'}[/dim]"
+        f"[dim]{'phys load':<12} {'readiness':<10} {'exam':<30} {'flags'}[/dim]"
     )
     for result in ranked:
-        label = result.readiness_label.casefold()
-        score = "--" if result.readiness_score is None else f"{result.readiness_score:.0f}"
+        readiness = result.readiness_label.casefold()
+        stress = _stress_for_result(result)
+        load = _stress_score_text(stress)
+        level = _stress_level_text(stress)
         console.print(
             Text.assemble(
-                (f"{score:>5}   ", status_color(result.readiness_label)),
-                (f"{label:<10} ", status_color(result.readiness_label)),
+                (f"{load} {level:<10} ", _stress_color(level)),
+                (f"{readiness:<10} ", status_color(result.readiness_label)),
                 f"{truncate(result.exam.course, 30):<30} ",
                 truncate(_compact_flags(result), 24),
             )
@@ -536,11 +578,11 @@ def _print_compact_report(results: list[ExamReadiness], sync_run, demo_data: boo
             _print_compact_exam_detail(result)
 
     if ranked:
-        _section("EXAM STRESS MONITOR")
-        for index, result in enumerate(ranked):
+        _section("STRESS DRIVERS")
+        for index, result in enumerate(analyzed):
             if index:
                 console.print()
-            _print_compact_stress_monitor(result)
+            _print_compact_stress_drivers(result)
 
     if upcoming:
         _section("UPCOMING")
@@ -554,6 +596,10 @@ def _print_compact_report(results: list[ExamReadiness], sync_run, demo_data: boo
 def _print_compact_exam_detail(result: ExamReadiness) -> None:
     label = result.readiness_label.casefold()
     score = "--" if result.readiness_score is None else f"{result.readiness_score:.0f}"
+    stress = _stress_for_result(result)
+    load_label = "n/a" if stress is None else stress.label
+    load_score = "--" if stress is None else f"{stress.score}/100"
+    load_color = _stress_color(load_label)
     sleep_minutes = result.sleep.total_sleep_minutes if result.sleep else None
     recovery_score = result.recovery.recovery_score if result.recovery else None
     sleep_line = (
@@ -580,11 +626,13 @@ def _print_compact_exam_detail(result: ExamReadiness) -> None:
     )
     console.print(
         f"\n[dim]{'readiness':<10}[/dim] "
-        f"[{status_color(result.readiness_label)}]{label} {score}[/]"
+        f"[{status_color(result.readiness_label)}]{label} {score:<5}[/] "
+        f"[{status_color(result.readiness_label)}]{make_bar(result.readiness_score)}[/]"
     )
     console.print(
-        f"[dim]{'bar':<10}[/dim] "
-        f"[{status_color(result.readiness_label)}]{make_bar(result.readiness_score)}[/]"
+        f"[dim]{'phys load':<10}[/dim] "
+        f"[{load_color}]{load_label} {load_score:<7}[/] "
+        f"[{load_color}]{stress_bar(stress.score if stress else None)}[/]"
     )
     console.print(f"\n[dim]{'note':<10}[/dim] {escape(result.summary)}")
 
@@ -602,10 +650,6 @@ def _stress_color(label: str) -> str:
     return "dim"
 
 
-def _stress_component_lookup(stress: StressResult) -> dict[str, str]:
-    return {component.name: component.label for component in stress.components}
-
-
 def _print_compact_stress_monitor(result: ExamReadiness) -> None:
     console.print(f"[bold]{escape(result.exam.course)}[/bold]")
     if result.readiness_label == "UPCOMING":
@@ -621,7 +665,7 @@ def _print_compact_stress_monitor(result: ExamReadiness) -> None:
         return
 
     color = _stress_color(stress.label)
-    labels = _stress_component_lookup(stress)
+    labels = {component.name: component.label for component in stress.components}
     recovery_score = result.recovery.recovery_score if result.recovery else None
     previous_strain = result.previous_cycle.strain if result.previous_cycle else None
 
@@ -633,23 +677,23 @@ def _print_compact_stress_monitor(result: ExamReadiness) -> None:
     console.print(
         f"[dim]{'sleep':<10}[/dim] "
         f"{compact_duration(result.sleep_debt_minutes, signed=True):<18} "
-        f"{labels['sleep']}"
+        f"{labels['sleep_debt']}"
     )
     console.print(
         f"[dim]{'recovery':<10}[/dim] "
-        f"{format_percent(recovery_score):<18} {labels['recovery']}"
+        f"{format_percent(recovery_score):<18} {labels['recovery_drop']}"
     )
     console.print(
         f"[dim]{'hrv':<10}[/dim] "
-        f"{format_percent_delta(result.hrv_delta_percent):<18} {labels['hrv']}"
+        f"{format_percent_delta(result.hrv_delta_percent):<18} {labels['hrv_pressure']}"
     )
     console.print(
         f"[dim]{'rhr':<10}[/dim] "
-        f"{format_bpm_delta(result.rhr_delta_bpm):<18} {labels['rhr']}"
+        f"{format_bpm_delta(result.rhr_delta_bpm):<18} {labels['rhr_elevation']}"
     )
     console.print(
         f"[dim]{'strain':<10}[/dim] "
-        f"{format_float(previous_strain):<18} {labels['strain']}"
+        f"{format_float(previous_strain):<18} {labels['strain_load']}"
     )
 
     drivers = top_stress_drivers(stress.components)
@@ -665,9 +709,45 @@ def _print_compact_stress_monitor(result: ExamReadiness) -> None:
     )
 
 
+def _print_compact_stress_drivers(result: ExamReadiness) -> None:
+    stress = _stress_for_result(result)
+    if stress is None:
+        _print_compact_stress_monitor(result)
+        return
+
+    console.print(f"[bold]{escape(result.exam.course)}[/bold]")
+    console.print(f"[dim]{'driver':<18} {'points':>6}   {'effect':<12} note[/dim]")
+    for component in stress.components:
+        console.print(
+            f"{_driver_display_name(component.name):<18} "
+            f"+{component.points:<5}   "
+            f"{component.label:<12} "
+            f"{component.note}"
+        )
+
+    drivers = top_stress_drivers(stress.components)
+    if drivers:
+        driver = drivers[0]
+        console.print(
+            "[dim]top driver [/dim] "
+            f"{_driver_display_name(driver.name)} (+{driver.points})"
+        )
+    else:
+        console.print("[dim]top driver [/dim] no major physiological load driver")
+    console.print(
+        f"[dim]{'note':<10}[/dim] Physiological Load Index estimates body load "
+        "from sleep, recovery, HRV, RHR, and strain."
+    )
+    console.print(
+        f"{'':<10} It is not a mental stress diagnosis."
+    )
+
+
 def _print_compact_upcoming(exam: Exam, now: datetime) -> None:
+    room = extract_room_from_notes(exam.notes)
     console.print(f"[bold]{escape(exam.course)}[/bold]")
     console.print(f"[dim]{'time':<10}[/dim] {format_compact_datetime(exam.exam_at)}")
+    console.print(f"[dim]{'room':<10}[/dim] {escape(room or 'n/a')}")
     console.print(f"[dim]{'remaining':<10}[/dim] {_remaining_text(exam.exam_at, now)}")
     console.print(
         f"[dim]{'status':<10}[/dim] "
