@@ -96,12 +96,24 @@ def test_compact_report_shows_upcoming_without_fake_detail_fields(monkeypatch) -
 
     assert "upcoming" in output.casefold()
     assert "analysis pending night-before WHOOP data" in output
-    assert "12-0.003" in output
-    assert "sleep" not in output.casefold()
+    assert "12-0.003" not in output
+    assert "pending night-before sleep stream data" in output
     assert "recovery" not in output.casefold()
     assert "hrv" not in output.casefold()
     assert "rhr" not in output.casefold()
     assert "strain" not in output.casefold()
+
+
+def test_upcoming_exams_do_not_fake_sleep_hr_values(monkeypatch) -> None:
+    test_console = Console(record=True, width=100, color_system=None)
+    monkeypatch.setattr(cli_main, "console", test_console)
+
+    cli_main._print_compact_report([_upcoming_result()], sync_run=None)
+    output = test_console.export_text()
+
+    assert "pending night-before sleep stream data" in output
+    assert "avg hr" not in output
+    assert "max hr" not in output
 
 
 def test_compact_report_keeps_upcoming_out_of_stress_drivers(monkeypatch) -> None:

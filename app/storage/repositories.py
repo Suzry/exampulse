@@ -4,16 +4,18 @@ import json
 from datetime import timedelta
 from typing import Any
 
-from sqlmodel import Session, desc, select
+from sqlmodel import Session, delete, desc, select
 
 from app.core.models import (
     Exam,
     ExamInsight,
     OAuthToken,
+    ResearchRawHRPoint,
     SyncRun,
     WhoopCycle,
     WhoopRecovery,
     WhoopSleep,
+    WhoopSleepStreamPoint,
 )
 from app.utils.time import parse_datetime, utc_now
 
@@ -183,6 +185,40 @@ def upsert_cycle(session: Session, payload: dict[str, Any]) -> WhoopCycle:
     return cycle
 
 
+def upsert_sleep_stream_points(
+    session: Session,
+    *,
+    sleep_id: str,
+    points: list[dict[str, Any]],
+) -> int:
+    saved = 0
+    for point in points:
+        timestamp = parse_datetime(point["timestamp"])
+        existing = session.exec(
+            select(WhoopSleepStreamPoint).where(
+                WhoopSleepStreamPoint.sleep_id == sleep_id,
+                WhoopSleepStreamPoint.timestamp == timestamp,
+            )
+        ).first()
+        values = {
+            "hr": int(point["hr"]),
+            "is_sleeping": bool(point.get("is_sleeping", True)),
+        }
+        if existing is None:
+            existing = WhoopSleepStreamPoint(
+                sleep_id=sleep_id,
+                timestamp=timestamp,
+                **values,
+            )
+        else:
+            for key, value in values.items():
+                setattr(existing, key, value)
+        session.add(existing)
+        saved += 1
+    session.commit()
+    return saved
+
+
 def upsert_exam(
     session: Session,
     *,
@@ -210,6 +246,12 @@ def list_exams(session: Session) -> list[Exam]:
     return list(session.exec(select(Exam).order_by(Exam.exam_at)))
 
 
+def delete_all_exams(session: Session) -> None:
+    session.exec(delete(ExamInsight))
+    session.exec(delete(Exam))
+    session.commit()
+
+
 def list_sleeps(session: Session) -> list[WhoopSleep]:
     return list(session.exec(select(WhoopSleep).order_by(WhoopSleep.end)))
 
@@ -220,6 +262,57 @@ def list_recoveries(session: Session) -> list[WhoopRecovery]:
 
 def list_cycles(session: Session) -> list[WhoopCycle]:
     return list(session.exec(select(WhoopCycle).order_by(WhoopCycle.start)))
+
+
+def list_sleep_stream_points(
+    session: Session,
+    *,
+    sleep_id: str | None = None,
+) -> list[WhoopSleepStreamPoint]:
+    statement = select(WhoopSleepStreamPoint)
+    if sleep_id is not None:
+        statement = statement.where(WhoopSleepStreamPoint.sleep_id == sleep_id)
+    return list(session.exec(statement.order_by(WhoopSleepStreamPoint.timestamp)))
+
+
+def upsert_research_raw_hr_points(
+    session: Session,
+    *,
+    source: str,
+    points: list[dict[str, Any]],
+) -> int:
+    saved = 0
+    for point in points:
+        timestamp = parse_datetime(point["timestamp"])
+        existing = session.exec(
+            select(ResearchRawHRPoint).where(
+                ResearchRawHRPoint.timestamp == timestamp,
+                ResearchRawHRPoint.source == source,
+            )
+        ).first()
+        if existing is None:
+            existing = ResearchRawHRPoint(
+                timestamp=timestamp,
+                hr=int(point["hr"]),
+                source=source,
+            )
+        else:
+            existing.hr = int(point["hr"])
+        session.add(existing)
+        saved += 1
+    session.commit()
+    return saved
+
+
+def list_research_raw_hr_points(
+    session: Session,
+    *,
+    source: str | None = None,
+) -> list[ResearchRawHRPoint]:
+    statement = select(ResearchRawHRPoint)
+    if source is not None:
+        statement = statement.where(ResearchRawHRPoint.source == source)
+    return list(session.exec(statement.order_by(ResearchRawHRPoint.timestamp)))
 
 
 def save_exam_insight(

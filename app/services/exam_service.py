@@ -7,7 +7,7 @@ from typing import Any
 from sqlmodel import Session
 
 from app.core.models import Exam
-from app.storage.repositories import list_exams, upsert_exam
+from app.storage.repositories import delete_all_exams, list_exams, upsert_exam
 from app.utils.time import require_timezone
 
 
@@ -19,10 +19,13 @@ class ExamService:
     def __init__(self, session: Session):
         self.session = session
 
-    def import_file(self, path: str | Path) -> list[Exam]:
+    def import_file(self, path: str | Path, *, replace: bool = False) -> list[Exam]:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
         if not isinstance(data, list):
             raise ExamImportError("exams.json must contain a list of exams.")
+
+        if replace:
+            delete_all_exams(self.session)
 
         imported: list[Exam] = []
         for index, item in enumerate(data, start=1):

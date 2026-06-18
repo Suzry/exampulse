@@ -53,7 +53,7 @@ run_exampulse() {
 echo
 echo "[1/4] Importing exams..."
 if [ -f "exams.json" ]; then
-  run_exampulse exams import exams.json
+  run_exampulse exams import exams.json --replace
 else
   echo "No exams.json found. Skipping exam import."
 fi

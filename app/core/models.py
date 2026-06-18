@@ -70,6 +70,19 @@ class WhoopSleep(SQLModel, table=True):
     raw_json: str = ""
 
 
+class WhoopSleepStreamPoint(SQLModel, table=True):
+    __table_args__ = (
+        UniqueConstraint("sleep_id", "timestamp", name="uq_sleep_stream_sleep_time"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    sleep_id: str = Field(index=True)
+    timestamp: datetime = Field(sa_column=datetime_column(index=True))
+    hr: int
+    is_sleeping: bool = True
+    created_at: datetime = Field(default_factory=utc_now, sa_column=datetime_column())
+
+
 class WhoopRecovery(SQLModel, table=True):
     sleep_id: str = Field(primary_key=True)
     cycle_id: int = Field(index=True)
@@ -152,3 +165,15 @@ class SyncRun(SQLModel, table=True):
     skipped_records: int = 0
     status: str = Field(default="ok", index=True)
     message: str = ""
+
+
+class ResearchRawHRPoint(SQLModel, table=True):
+    __table_args__ = (
+        UniqueConstraint("timestamp", "source", name="uq_research_hr_time_source"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    timestamp: datetime = Field(sa_column=datetime_column(index=True))
+    hr: int
+    source: str = Field(index=True)
+    created_at: datetime = Field(default_factory=utc_now, sa_column=datetime_column())
