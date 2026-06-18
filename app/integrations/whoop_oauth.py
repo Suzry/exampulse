@@ -22,13 +22,16 @@ class OAuthError(RuntimeError):
 
 
 def build_authorization_url(settings: Settings, state: str) -> str:
-    return f"{AUTH_URL}?{urlencode({
-        'response_type': 'code',
-        'client_id': settings.whoop_client_id,
-        'redirect_uri': settings.whoop_redirect_uri,
-        'scope': settings.whoop_scopes,
-        'state': state,
-    })}"
+    query = urlencode(
+        {
+            "response_type": "code",
+            "client_id": settings.whoop_client_id,
+            "redirect_uri": settings.whoop_redirect_uri,
+            "scope": settings.whoop_scopes,
+            "state": state,
+        }
+    )
+    return f"{AUTH_URL}?{query}"
 
 
 def _exchange_token(data: dict[str, str]) -> dict:
