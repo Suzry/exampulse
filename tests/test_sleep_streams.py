@@ -9,6 +9,7 @@ import app.cli.main as cli_main
 from app.core.analysis import ExamReadiness
 from app.core.models import Exam, WhoopSleep, WhoopSleepStreamPoint
 from app.core.night_hr import analyze_night_hr_signal
+from app.services.sync_service import _extract_hr_stream_points
 from app.storage.repositories import list_sleep_stream_points, upsert_sleep_stream_points
 
 
@@ -124,3 +125,31 @@ def test_missing_sleep_stream_data_does_not_crash_compact_report(monkeypatch) ->
 
     assert "NIGHT HR SIGNAL" in output
     assert "no sleep stream data" in output
+
+
+def test_extract_hr_stream_points_reads_whoop_stream_payload() -> None:
+    points = _extract_hr_stream_points(
+        {
+            "stream": [
+                {
+                    "timestamp": "2026-06-23T05:17:54.100Z",
+                    "hr": None,
+                    "is_sleeping": None,
+                },
+                {
+                    "timestamp": "2026-06-23T05:18:54.100Z",
+                    "hr": 62.4,
+                    "is_sleeping": True,
+                },
+            ],
+            "algorithm_version": "example",
+        }
+    )
+
+    assert points == [
+        {
+            "timestamp": "2026-06-23T05:18:54.100Z",
+            "hr": 62,
+            "is_sleeping": True,
+        }
+    ]

@@ -25,3 +25,13 @@ def test_pagination_uses_next_token() -> None:
 
     assert records == [{"id": "one"}, {"id": "two"}]
     assert client.calls[1][1]["nextToken"] == "next-page"
+
+
+def test_sleep_stream_uses_singular_type_param() -> None:
+    client = FakeWhoopClient()
+    client.get_sleep_stream("sleep-1")
+
+    assert client.calls[0] == (
+        "/v2/activity/sleep/sleep-1/stream",
+        {"type": "hr"},
+    )

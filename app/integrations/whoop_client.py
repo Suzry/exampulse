@@ -75,11 +75,10 @@ class WhoopClient:
     def get_cycle_collection(self, start: datetime, end: datetime) -> list[dict]:
         return self._paginate("/v2/cycle", start=start, end=end)
 
-    def get_sleep_stream(self, sleep_id: str, types: list[str] | None = None) -> dict:
-        stream_types = types or ["hr"]
+    def get_sleep_stream(self, sleep_id: str, stream_type: str = "hr") -> dict:
         return self._request(
             f"/v2/activity/sleep/{sleep_id}/stream",
-            params={"types": ",".join(stream_types)},
+            params={"type": stream_type},
         )
 
     def is_authenticated(self) -> bool:

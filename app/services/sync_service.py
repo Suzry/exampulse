@@ -66,7 +66,9 @@ class SyncService:
         if streams:
             for sleep_id in scored_sleep_ids:
                 try:
-                    stream_payload = self.client.get_sleep_stream(sleep_id, types=["hr"])
+                    stream_payload = self.client.get_sleep_stream(
+                        sleep_id, stream_type="hr"
+                    )
                 except WhoopAPIError:
                     sleep_stream_errors += 1
                     continue
@@ -107,6 +109,7 @@ def _extract_hr_stream_points(payload) -> list[dict]:
     elif isinstance(payload, dict):
         raw_points = (
             payload.get("hr")
+            or payload.get("stream")
             or payload.get("records")
             or payload.get("data")
             or payload.get("points")
