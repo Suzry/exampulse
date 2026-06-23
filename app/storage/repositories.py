@@ -383,7 +383,19 @@ def save_sync_run(
 
 
 def latest_sync_run(session: Session) -> SyncRun | None:
-    return session.exec(select(SyncRun).order_by(desc(SyncRun.started_at))).first()
+    return session.exec(
+        select(SyncRun)
+        .where(SyncRun.source != "whoop_raw_check")
+        .order_by(desc(SyncRun.started_at))
+    ).first()
+
+
+def latest_whoop_raw_check(session: Session) -> SyncRun | None:
+    return session.exec(
+        select(SyncRun)
+        .where(SyncRun.source == "whoop_raw_check")
+        .order_by(desc(SyncRun.started_at))
+    ).first()
 
 
 def has_demo_data(session: Session) -> bool:

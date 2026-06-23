@@ -12,7 +12,20 @@ from app.utils.time import isoformat_utc
 
 
 class WhoopAPIError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        path: str | None = None,
+        response_json: dict[str, Any] | None = None,
+        response_text: str = "",
+    ):
+        super().__init__(message)
+        self.status_code = status_code
+        self.path = path
+        self.response_json = response_json or {}
+        self.response_text = response_text
 
 
 class WhoopClient:
@@ -38,7 +51,14 @@ class WhoopClient:
             )
 
         if response.status_code >= 400:
-            raise WhoopAPIError(f"WHOOP API request failed: {response.status_code}")
+            response_json = _safe_json(response)
+            raise WhoopAPIError(
+                f"WHOOP API request failed: {response.status_code}",
+                status_code=response.status_code,
+                path=path,
+                response_json=response_json,
+                response_text=response.text[:200],
+            )
         return response.json()
 
     def _paginate(
@@ -83,3 +103,11 @@ class WhoopClient:
 
     def is_authenticated(self) -> bool:
         return get_oauth_token(self.session) is not None
+
+
+def _safe_json(response: httpx.Response) -> dict[str, Any]:
+    try:
+        payload = response.json()
+    except ValueError:
+        return {}
+    return payload if isinstance(payload, dict) else {}

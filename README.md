@@ -65,12 +65,29 @@ you re-run `exampulse auth`.
 exampulse auth
 exampulse demo-seed
 exampulse sync --days 30
+exampulse sync --days 30 --streams
+exampulse whoop raw-check
 exampulse exams import exams.json
 exampulse exams list
 exampulse today --compact
 exampulse report
 exampulse report --classic
+exampulse export
 exampulse watch --every 30
+```
+
+## WHOOP-only raw HR status
+
+- Exampulse uses official WHOOP APIs.
+- Summary data works: sleep, recovery, cycles, strain, HRV, RHR.
+- Official raw sleep HR is attempted through Sleep Stream.
+- If WHOOP returns 403, Exampulse will not fake data.
+- All-day raw HR is not available from the public WHOOP API.
+
+For user-owned WHOOP raw HR exports, import a CSV with `timestamp` and `hr`:
+
+```bash
+python -m app.cli.main research raw-hr import-csv whoop_hr.csv --source whoop_export
 ```
 
 ## Daily usage on Windows

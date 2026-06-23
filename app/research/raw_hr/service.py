@@ -21,6 +21,32 @@ class RawHRImportSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class RawHRAuditSource:
+    source: str
+    points: int
+    first: datetime
+    last: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class RawHRAudit:
+    total_points: int
+    sources: list[RawHRAuditSource]
+
+    @property
+    def first(self) -> datetime | None:
+        if not self.sources:
+            return None
+        return min(source.first for source in self.sources)
+
+    @property
+    def last(self) -> datetime | None:
+        if not self.sources:
+            return None
+        return max(source.last for source in self.sources)
+
+
+@dataclass(frozen=True, slots=True)
 class ExamWindowHRResult:
     exam: Exam
     window_start: datetime
@@ -32,6 +58,10 @@ class ExamWindowHRResult:
     dbpm: float | None
     elevated_percent: float | None
     z_like: float | None
+
+
+class RawHRDataError(ValueError):
+    pass
 
 
 class RawHRService:
@@ -59,6 +89,22 @@ class RawHRService:
         )
         return RawHRImportSummary(rows_imported=rows, source=source)
 
+    def audit(self) -> RawHRAudit:
+        points = repositories.list_research_raw_hr_points(self.session)
+        by_source: dict[str, list[ResearchRawHRPoint]] = {}
+        for point in points:
+            by_source.setdefault(point.source, []).append(point)
+        sources = [
+            RawHRAuditSource(
+                source=source,
+                points=len(source_points),
+                first=min(point.timestamp for point in source_points),
+                last=max(point.timestamp for point in source_points),
+            )
+            for source, source_points in sorted(by_source.items())
+        ]
+        return RawHRAudit(total_points=len(points), sources=sources)
+
     def exam_window(self, exam_name: str, *, source: str | None = None) -> ExamWindowHRResult:
         exam = self._find_exam(exam_name)
         window_start = to_utc(exam.exam_at)
@@ -74,6 +120,9 @@ class RawHRService:
             for point in points
             if baseline_start <= to_utc(point.timestamp) < window_start
         ]
+
+        if not exam_points or not baseline_points:
+            raise RawHRDataError("not enough raw HR data")
 
         avg_exam = _avg_hr(exam_points)
         avg_baseline = _avg_hr(baseline_points)

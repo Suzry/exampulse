@@ -29,10 +29,16 @@ from app.services.exam_service import ExamImportError, ExamService
 from app.services.export_service import ExportService
 from app.services.insight_service import InsightService
 from app.services.sync_service import SyncService
-from app.research.raw_hr.service import RawHRService
+from app.services.sync_service import redact_sleep_id
+from app.services.whoop_raw_check_service import (
+    SLEEP_STREAM_FORBIDDEN,
+    WhoopRawCheckService,
+)
+from app.research.raw_hr.service import RawHRDataError, RawHRService
 from app.storage.db import get_session, init_db
 from app.storage.repositories import (
     has_demo_data,
+    latest_whoop_raw_check,
     latest_sync_run,
     list_cycles,
     list_recoveries,
@@ -62,9 +68,11 @@ app = typer.Typer(no_args_is_help=True)
 exams_app = typer.Typer(help="Import and list exams.")
 research_app = typer.Typer(help="Research tools for user-owned datasets.")
 raw_hr_app = typer.Typer(help="User-provided raw heart-rate CSV tools.")
+whoop_app = typer.Typer(help="WHOOP official API checks.")
 app.add_typer(exams_app, name="exams")
 research_app.add_typer(raw_hr_app, name="raw-hr")
 app.add_typer(research_app, name="research")
+app.add_typer(whoop_app, name="whoop")
 
 
 def _ensure_db() -> None:
@@ -119,12 +127,21 @@ def sync(
         "--streams",
         help="Also sync official WHOOP sleep HR stream points.",
     ),
+    debug_streams: bool = typer.Option(
+        False,
+        "--debug-streams",
+        help="Show a larger safe sample of sleep stream errors.",
+    ),
 ) -> None:
     """Sync official WHOOP sleep, recovery, and cycle data."""
     _ensure_db()
     try:
         with get_session() as session:
-            summary = SyncService(session).sync(days=days, streams=streams)
+            summary = SyncService(session).sync(
+                days=days,
+                streams=streams,
+                stream_error_sample_limit=5 if debug_streams else 2,
+            )
         console.print(
             "[green]Sync complete:[/green] "
             f"{summary.sleeps_saved} sleeps, "
@@ -143,6 +160,7 @@ def sync(
                     "[yellow]Sleep stream fetch errors:[/yellow] "
                     f"{summary.sleep_stream_errors} sleep(s)."
                 )
+                _print_stream_error_samples(summary, debug=debug_streams)
     except (OAuthError, WhoopAPIError) as exc:
         console.print(f"[red]Sync failed:[/red] {exc}")
         raise typer.Exit(code=1) from exc
@@ -183,9 +201,13 @@ def list_exam_command() -> None:
 @raw_hr_app.command("import-csv")
 def import_raw_hr_csv(
     path: Path = typer.Argument(..., exists=True, readable=True),
-    source: str = typer.Option("apple_health", "--source", help="Source label for this HR file."),
+    source: str = typer.Option(
+        "whoop_export",
+        "--source",
+        help="Source label for this WHOOP-owned HR export.",
+    ),
 ) -> None:
-    """Import user-owned raw HR points from CSV."""
+    """Import real WHOOP-owned raw HR points from CSV."""
     _ensure_db()
     try:
         with get_session() as session:
@@ -199,6 +221,15 @@ def import_raw_hr_csv(
         raise typer.Exit(code=1) from exc
 
 
+@raw_hr_app.command("audit")
+def audit_raw_hr() -> None:
+    """Summarize imported real raw HR data."""
+    _ensure_db()
+    with get_session() as session:
+        audit = RawHRService(session).audit()
+    _print_raw_hr_audit(audit)
+
+
 @raw_hr_app.command("exam-window")
 def research_exam_window(
     exam: str = typer.Option(..., "--exam", help="Course name or substring."),
@@ -209,11 +240,23 @@ def research_exam_window(
     try:
         with get_session() as session:
             result = RawHRService(session).exam_window(exam, source=source)
+    except RawHRDataError as exc:
+        _print_not_enough_raw_hr_data()
+        raise typer.Exit(code=1) from exc
     except ValueError as exc:
         console.print(f"[red]Exam-window HR failed:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
     _print_exam_window_hr(result)
+
+
+@whoop_app.command("raw-check")
+def whoop_raw_check() -> None:
+    """Check official WHOOP raw HR availability safely."""
+    _ensure_db()
+    with get_session() as session:
+        result = WhoopRawCheckService(session).check()
+    _print_whoop_raw_check(result)
 
 
 @app.command()
@@ -243,9 +286,11 @@ def report(
     with get_session() as session:
         results = InsightService(session).generate(exam_name=exam)
         sync_run = latest_sync_run(session)
+        raw_check_run = latest_whoop_raw_check(session)
         demo_data = has_demo_data(session) or bool(sync_run and sync_run.source == "demo")
         sleeps = list_sleeps(session)
         sleep_stream_points = list_sleep_stream_points(session)
+        sleep_stream_forbidden = _sleep_stream_forbidden(sync_run, raw_check_run)
 
     if not results:
         console.print("[yellow]No imported exams found. Showing demo output.[/yellow]")
@@ -257,6 +302,7 @@ def report(
             demo_data=demo_data,
             sleeps=sleeps,
             sleep_stream_points=sleep_stream_points,
+            sleep_stream_forbidden=sleep_stream_forbidden,
         )
     else:
         _print_report(
@@ -613,6 +659,36 @@ def _print_exams_table(exams: list[Exam]) -> None:
     console.print(table)
 
 
+def _print_stream_error_samples(summary, *, debug: bool = False) -> None:
+    samples = summary.sleep_stream_error_samples or []
+    if not samples:
+        return
+    console.print("[yellow]First stream errors:[/yellow]")
+    for sample in samples:
+        detail = sample.error or sample.message or sample.response_text or "unknown"
+        line = (
+            f"- {sample.status_code or 'n/a'} "
+            f"sleep_id={sample.redacted_sleep_id} "
+            f"error={detail}"
+        )
+        if debug and sample.path:
+            line = f"{line} path={_redact_stream_path(sample.path, sample.sleep_id)}"
+        console.print(line)
+
+
+def _redact_stream_path(path: str, sleep_id: str) -> str:
+    if not path or not sleep_id:
+        return path
+    return path.replace(sleep_id, redact_sleep_id(sleep_id))
+
+
+def _sleep_stream_forbidden(sync_run, raw_check_run) -> bool:
+    return any(
+        run is not None and SLEEP_STREAM_FORBIDDEN in (run.message or "")
+        for run in (sync_run, raw_check_run)
+    )
+
+
 def _print_exam_window_hr(result) -> None:
     _section("EXAM WINDOW HR", width=40)
     console.print(f"[dim]{'exam':<10}[/dim] {escape(result.exam.course)}")
@@ -621,6 +697,7 @@ def _print_exam_window_hr(result) -> None:
         f"{result.window_start.astimezone().strftime('%H:%M')} - "
         f"{result.window_end.astimezone().strftime('%H:%M')}"
     )
+    console.print(f"[dim]{'source':<10}[/dim] real raw HR")
     console.print(f"[dim]{'points':<10}[/dim] {result.points}")
     console.print(f"[dim]{'baseline':<10}[/dim] {_hr_text(result.avg_hr_baseline)}")
     console.print(f"[dim]{'exam avg':<10}[/dim] {_hr_text(result.avg_hr_exam)}")
@@ -628,9 +705,74 @@ def _print_exam_window_hr(result) -> None:
     console.print(f"[dim]{'z-ish':<10}[/dim] {_float_text(result.z_like)}")
     console.print(f"[dim]{'elevated':<10}[/dim] {_percent_text(result.elevated_percent)}")
     console.print(
-        "\n[dim]note      [/dim] This uses user-provided raw HR data and compares "
-        "exam-window HR against a local baseline."
+        "\n[dim]note      [/dim] Real user-provided HR data compared against "
+        "a 90-minute local baseline."
     )
+
+
+def _print_whoop_raw_check(result) -> None:
+    _section("WHOOP RAW ACCESS CHECK", width=40)
+    console.print(f"[dim]{'summary data':<18}[/dim] {result.summary_status}")
+    stream = result.sleep_stream_status
+    if result.sleep_stream_status_code is not None:
+        stream = f"{stream} {result.sleep_stream_status_code}"
+    console.print(f"[dim]{'sleep stream':<18}[/dim] {stream}")
+    console.print(f"[dim]{'all-day raw HR':<18}[/dim] not exposed by official WHOOP API")
+    console.print(f"[dim]{'source':<18}[/dim] WHOOP band only")
+    console.print()
+    if result.sleep_stream_forbidden:
+        console.print(
+            "[dim]note              [/dim] Exampulse requested official WHOOP Sleep Stream.\n"
+            "The API returned 403, so raw sleep HR is not available for this account/app right now."
+        )
+    elif result.sleep_stream_status == "available":
+        console.print("[dim]note              [/dim] Official WHOOP Sleep Stream is available.")
+    else:
+        console.print(
+            "[dim]note              [/dim] Summary data is checked through official WHOOP APIs only."
+        )
+
+
+def _print_not_enough_raw_hr_data() -> None:
+    console.print("[yellow]Not enough raw HR data for this exam.[/yellow]")
+    console.print("Needed:")
+    console.print("- 90-min baseline before exam")
+    console.print("- HR points during exam window")
+    console.print()
+    console.print("Run:")
+    console.print("python -m app.cli.main research raw-hr audit")
+    console.print("to inspect imported data.")
+
+
+def _print_raw_hr_audit(audit) -> None:
+    _section("RAW HR DATA AUDIT", width=40)
+    if audit.total_points == 0:
+        console.print("No raw HR points found.")
+        console.print("Import real HR data first:")
+        console.print()
+        console.print(
+            "python -m app.cli.main research raw-hr import-csv "
+            "whoop_hr.csv --source whoop_export"
+        )
+        return
+
+    console.print(f"[dim]{'total points':<14}[/dim] {audit.total_points:,}")
+    console.print(f"[dim]{'sources':<14}[/dim] {len(audit.sources)}")
+    console.print(
+        f"[dim]{'date range':<14}[/dim] "
+        f"{format_compact_datetime(audit.first)} -> {format_compact_datetime(audit.last)}"
+    )
+    console.print()
+    console.print(
+        f"[dim]{'source':<28} {'points':>8}  {'first':<16} {'last':<16}[/dim]"
+    )
+    for source in audit.sources:
+        console.print(
+            f"{truncate(source.source, 28):<28} "
+            f"{source.points:>8,}  "
+            f"{format_compact_datetime(source.first):<16} "
+            f"{format_compact_datetime(source.last):<16}"
+        )
 
 
 def _hr_text(value: float | None) -> str:
@@ -663,6 +805,7 @@ def _print_compact_report(
     demo_data: bool = False,
     sleeps: list[WhoopSleep] | None = None,
     sleep_stream_points: list | None = None,
+    sleep_stream_forbidden: bool = False,
 ) -> None:
     ranked = sorted(results, key=_risk_order)
     analyzed = [result for result in ranked if result.readiness_label != "UPCOMING"]
@@ -670,10 +813,14 @@ def _print_compact_report(
     sleeps = sleeps or []
     sleep_stream_points = sleep_stream_points or []
     night_hr_by_result = {
-        id(result): analyze_night_hr_signal(
-            result,
-            sleeps=sleeps,
-            stream_points=sleep_stream_points,
+        id(result): (
+            NightHRSignal(status="forbidden")
+            if sleep_stream_forbidden
+            else analyze_night_hr_signal(
+                result,
+                sleeps=sleeps,
+                stream_points=sleep_stream_points,
+            )
         )
         for result in ranked
     }
@@ -824,6 +971,14 @@ def _print_compact_exam_detail(result: ExamReadiness, night_hr: NightHRSignal | 
 
 def _print_night_hr_signal(signal: NightHRSignal | None) -> None:
     _section("NIGHT HR SIGNAL", width=40)
+    if signal is not None and signal.status == "forbidden":
+        console.print("[dim]status    [/dim] WHOOP sleep stream forbidden by API")
+        console.print("[dim]source    [/dim] WHOOP band only")
+        console.print(
+            "[dim]note      [/dim] Summary data is available, but official raw sleep HR "
+            "is blocked for this account/app."
+        )
+        return
     if signal is None or signal.status == "missing_stream":
         console.print("[dim]status    [/dim] no sleep stream data")
         return
