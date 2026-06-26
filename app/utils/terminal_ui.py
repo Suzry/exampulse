@@ -40,6 +40,93 @@ def make_bar(
     return (fill * filled) + (empty * (width - filled))
 
 
+def value_color(
+    value: float | int | None,
+    max_value: float = 100,
+    good_high: bool = True,
+    low: float = 0.40,
+    high: float = 0.70,
+) -> str:
+    """Traffic-light color for a value, scaled against ``max_value``.
+
+    ``good_high`` flips the scale so that high readings (e.g. stress load)
+    read as red instead of green.
+    """
+    if value is None or max_value <= 0:
+        return "dim"
+    ratio = max(0.0, min(float(value) / float(max_value), 1.0))
+    if not good_high:
+        ratio = 1.0 - ratio
+    if ratio >= high:
+        return "green"
+    if ratio >= low:
+        return "yellow"
+    return "red"
+
+
+def colored_bar(
+    value: float | int | None,
+    max_value: float = 100,
+    width: int = 20,
+    good_high: bool = True,
+) -> str:
+    """A ``make_bar`` wrapped in Rich color markup based on the value."""
+    bar = make_bar(value, max_value=max_value, width=width)
+    color = value_color(value, max_value=max_value, good_high=good_high)
+    return f"[{color}]{bar}[/{color}]"
+
+
+_SPARK_TICKS_UNICODE = "▁▂▃▄▅▆▇█"
+_SPARK_TICKS_ASCII = "_.-=+*#"
+
+
+def sparkline(
+    values: list[float | int | None],
+    unicode: bool | None = None,
+) -> str:
+    """Render a numeric series as a one-line sparkline.
+
+    Values are min/max normalized across the series. ``None`` entries are
+    dropped. Returns an empty string when there is nothing to plot.
+    """
+    use_unicode = supports_unicode() if unicode is None else unicode
+    ticks = _SPARK_TICKS_UNICODE if use_unicode else _SPARK_TICKS_ASCII
+    usable = [float(value) for value in values if value is not None]
+    if not usable:
+        return ""
+    low = min(usable)
+    high = max(usable)
+    span = high - low
+    out = []
+    for value in usable:
+        if span <= 0:
+            index = len(ticks) // 2
+        else:
+            index = int(round(((value - low) / span) * (len(ticks) - 1)))
+        out.append(ticks[max(0, min(index, len(ticks) - 1))])
+    return "".join(out)
+
+
+def format_zscore(value: float | None) -> str:
+    """Format a z-score with a sigma marker, e.g. ``-2.1σ``."""
+    if value is None:
+        return "n/a"
+    sigma = "σ" if supports_unicode() else "sd"
+    return f"{value:+.1f}{sigma}"
+
+
+def zscore_color(value: float | None, threshold: float = 1.5) -> str:
+    """Color a z-score by how many standard deviations it sits from baseline."""
+    if value is None:
+        return "dim"
+    magnitude = abs(value)
+    if magnitude >= threshold * 1.5:
+        return "red"
+    if magnitude >= threshold:
+        return "yellow"
+    return "green"
+
+
 def horizontal_rule(width: int = 60) -> str:
     return ("─" if supports_unicode() else "-") * width
 

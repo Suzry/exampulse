@@ -7,7 +7,15 @@ from rich.console import Console
 import app.cli.main as cli_main
 from app.core.analysis import ExamReadiness
 from app.core.models import Exam, WhoopCycle, WhoopRecovery
-from app.utils.terminal_ui import extract_room_from_notes, make_bar
+from app.utils.terminal_ui import (
+    colored_bar,
+    extract_room_from_notes,
+    format_zscore,
+    make_bar,
+    sparkline,
+    value_color,
+    zscore_color,
+)
 
 
 def _upcoming_result() -> ExamReadiness:
@@ -79,6 +87,55 @@ def test_make_bar_clamps_and_renders_width() -> None:
     assert make_bar(150, width=10, unicode=True) == "██████████"
     assert make_bar(None, width=5, unicode=True) == "░░░░░"
     assert make_bar(50, width=10, unicode=False) == "#####-----"
+
+
+def test_sparkline_normalizes_and_drops_none() -> None:
+    line = sparkline([0, 50, 100], unicode=True)
+    assert line[0] == "▁"
+    assert line[-1] == "█"
+    assert len(line) == 3
+    # None values are skipped, not plotted.
+    assert len(sparkline([1, None, 9], unicode=True)) == 2
+    # Empty or all-None series render nothing.
+    assert sparkline([], unicode=True) == ""
+    assert sparkline([None, None], unicode=True) == ""
+
+
+def test_sparkline_flat_series_is_stable() -> None:
+    line = sparkline([5, 5, 5], unicode=True)
+    assert len(line) == 3
+    assert len(set(line)) == 1
+
+
+def test_sparkline_ascii_fallback() -> None:
+    line = sparkline([0, 100], unicode=False)
+    assert all(char in "_.-=+*#" for char in line)
+
+
+def test_value_color_traffic_light() -> None:
+    assert value_color(90) == "green"
+    assert value_color(55) == "yellow"
+    assert value_color(10) == "red"
+    assert value_color(None) == "dim"
+    # good_high=False flips the scale (e.g. stress load).
+    assert value_color(90, good_high=False) == "red"
+    assert value_color(10, good_high=False) == "green"
+
+
+def test_colored_bar_wraps_markup() -> None:
+    bar = colored_bar(90, width=4, good_high=True)
+    assert bar.startswith("[green]")
+    assert bar.endswith("[/green]")
+
+
+def test_format_and_color_zscore() -> None:
+    assert format_zscore(None) == "n/a"
+    assert format_zscore(-2.05).startswith("-2.0")
+    assert format_zscore(1.5).startswith("+1.5")
+    assert zscore_color(0.5) == "green"
+    assert zscore_color(1.7) == "yellow"
+    assert zscore_color(-3.0) == "red"
+    assert zscore_color(None) == "dim"
 
 
 def test_extract_room_from_notes() -> None:

@@ -54,16 +54,31 @@ from app.utils.formatters import (
     minutes_to_hm,
 )
 from app.utils.terminal_ui import (
+    colored_bar,
     compact_duration,
     format_compact_datetime,
+    format_zscore,
     horizontal_rule,
     make_bar,
     sleep_debt_marker,
+    sparkline,
     status_color,
+    supports_unicode,
     truncate,
+    value_color,
+    zscore_color,
 )
 
 console = Console()
+
+# Decorative glyphs and box styles degrade gracefully on non-UTF terminals.
+_UNICODE = supports_unicode()
+_DOT = "·" if _UNICODE else "-"
+_DELTA = "Δ" if _UNICODE else "d"
+_PLUSMINUS = "±" if _UNICODE else "+/-"
+_BANNER_BOX = box.DOUBLE if _UNICODE else box.ASCII_DOUBLE_HEAD
+_TABLE_BOX = box.SIMPLE_HEAVY if _UNICODE else box.ASCII
+_SIMPLE_BOX = box.SIMPLE if _UNICODE else box.ASCII
 app = typer.Typer(no_args_is_help=True)
 exams_app = typer.Typer(help="Import and list exams.")
 research_app = typer.Typer(help="Research tools for user-owned datasets.")
@@ -481,8 +496,8 @@ def _recovery_compact_text(recovery: WhoopRecovery | None) -> str:
     if recovery is None:
         return "n/a"
     score = "n/a" if recovery.recovery_score is None else f"{recovery.recovery_score:.0f}%"
-    bar = make_bar(recovery.recovery_score)
-    return f"{score:<4} [green]{bar}[/green]"
+    bar = colored_bar(recovery.recovery_score)
+    return f"{score:<4} {bar}"
 
 
 def _sleep_debt_marker(value: float | int | None) -> str:
@@ -563,7 +578,7 @@ def _print_compact_today(
     console.print(f"[dim]{'time':<13}[/dim] {format_compact_datetime(exam.exam_at)}")
     console.print(f"[dim]{'remaining':<13}[/dim] {_remaining_text(exam.exam_at, now)}")
     console.print(
-        f"[dim]{'stress monitor':<15}[/dim] "
+        f"[dim]{'stress':<13}[/dim] "
         "[cyan]pending night-before data[/cyan]"
     )
 
@@ -656,7 +671,7 @@ def _print_exams_table(exams: list[Exam]) -> None:
             "n/a" if exam.grade is None else f"{exam.grade:g}",
             exam.notes,
         )
-    console.print(table)
+    console.print(_ascii_safe_table(table))
 
 
 def _print_stream_error_samples(summary, *, debug: bool = False) -> None:
@@ -825,37 +840,16 @@ def _print_compact_report(
         for result in ranked
     }
 
-    console.print(Text.assemble(("[whoop] ", "cyan"), _compact_sync_line(sync_run)))
-    console.print(
-        Text.assemble(
-            ("[exams] ", "cyan"),
-            f"exams.json -> {len(results)} exams, "
-            f"{len(analyzed)} analyzed, {len(upcoming)} upcoming",
-        )
-    )
-    run_label = "demo scoring" if demo_data else "scoring"
-    console.print(
-        Text.assemble(
-            ("[run] ", "cyan"),
-            f"{run_label} each exam vs 14-day personal baseline ...",
-        )
-    )
-    console.print(
-        Text.assemble(
-            ("[run] ", "cyan"),
-            "estimating night-before physiological load ...",
-        )
+    _print_report_header(
+        sync_run=sync_run,
+        demo_data=demo_data,
+        total=len(results),
+        analyzed_n=len(analyzed),
+        upcoming_n=len(upcoming),
     )
 
     if analyzed:
-        _section("EXAM LEADERBOARD", width=74)
-        console.print("[dim]night-before physiology vs personal baseline[/dim]")
-        console.print(
-            f"[dim]{'load':>4} {'state':<10} {'ready':<8} {'sleep':>8} "
-            f"{'rec':>5} {'exam':<24} {'flags'}[/dim]"
-        )
-        for result in ranked:
-            _print_leaderboard_row(result)
+        _print_leaderboard(ranked)
 
     if analyzed:
         _section("EXAM DETAIL", width=74)
@@ -880,31 +874,103 @@ def _print_compact_report(
             _print_compact_upcoming(result.exam, now, night_hr_by_result[id(result)])
 
 
-def _print_leaderboard_row(result: ExamReadiness) -> None:
-    stress = _stress_for_result(result)
-    stress_label = _stress_level_text(stress)
-    load = _stress_score_text(stress)
-    readiness = _short_readiness(result)
-    sleep_delta = (
-        "--"
-        if result.readiness_label == "UPCOMING"
-        else compact_duration(result.sleep_debt_minutes, signed=True)
-    )
-    recovery_score = result.recovery.recovery_score if result.recovery else None
-    recovery = "--" if result.readiness_label == "UPCOMING" else format_percent(recovery_score)
-    final_note = "pending" if result.readiness_label == "UPCOMING" else _compact_flags(result)
+def _ascii_safe_table(table: Table) -> Table:
+    """Avoid Rich's unicode ellipsis when overflowing on non-UTF terminals."""
+    if not _UNICODE:
+        for column in table.columns:
+            column.overflow = "crop"
+    return table
 
+
+def _print_report_header(
+    *,
+    sync_run,
+    demo_data: bool,
+    total: int,
+    analyzed_n: int,
+    upcoming_n: int,
+) -> None:
+    title = Text()
+    title.append("EXAMPULSE", style="bold cyan")
+    title.append(f"  {_DOT}  Exam Readiness", style="bold")
+    if demo_data:
+        title.append("    DEMO DATA", style="bold magenta")
+    console.print(
+        Panel(title, box=_BANNER_BOX, border_style="cyan", padding=(0, 1))
+    )
+    console.print(
+        Text.assemble(("whoop  ", "bold cyan"), (_compact_sync_line(sync_run), "dim"))
+    )
     console.print(
         Text.assemble(
-            (f"{load:>4} ", _stress_color(stress_label)),
-            (f"{stress_label:<10} ", _stress_color(stress_label)),
-            (f"{readiness:<8} ", status_color(result.readiness_label)),
-            (f"{sleep_delta:>8} ", _sleep_delta_color(result.sleep_debt_minutes)),
-            f"{recovery:>5} ",
-            f"{truncate(result.exam.course, 24):<24} ",
-            truncate(final_note, 18),
+            ("exams  ", "bold cyan"),
+            (
+                f"{total} total {_DOT} {analyzed_n} analyzed {_DOT} {upcoming_n} upcoming",
+                "dim",
+            ),
         )
     )
+    method = "demo scoring" if demo_data else "scoring"
+    sigma = "σ" if _UNICODE else "sd"
+    console.print(
+        Text.assemble(
+            ("method ", "bold cyan"),
+            (
+                f"{method} vs 14-day baseline {_DOT} mean {_PLUSMINUS} {sigma}, "
+                "z-scores, percentiles",
+                "dim",
+            ),
+        )
+    )
+
+
+def _print_leaderboard(ranked: list[ExamReadiness]) -> None:
+    _section("EXAM LEADERBOARD", width=74)
+    console.print("[dim]night-before physiology vs personal baseline[/dim]")
+    table = Table(
+        box=_TABLE_BOX,
+        header_style="bold",
+        pad_edge=False,
+        expand=False,
+    )
+    overflow = "ellipsis" if _UNICODE else "crop"
+    table.add_column("Load", justify="right", no_wrap=True)
+    table.add_column("State", no_wrap=True)
+    table.add_column("Ready", no_wrap=True)
+    table.add_column("Sleep", justify="right", no_wrap=True)
+    table.add_column("Rec", justify="right", no_wrap=True)
+    table.add_column("Exam", no_wrap=True, overflow=overflow)
+    table.add_column("Top drivers", no_wrap=True, overflow=overflow)
+    for result in ranked:
+        table.add_row(*_leaderboard_cells(result))
+    console.print(_ascii_safe_table(table))
+
+
+def _leaderboard_cells(result: ExamReadiness) -> list:
+    upcoming = result.readiness_label == "UPCOMING"
+    stress = _stress_for_result(result)
+    stress_label = _stress_level_text(stress)
+    stress_style = _stress_color(stress_label)
+    load = _stress_score_text(stress)
+
+    recovery_score = result.recovery.recovery_score if result.recovery else None
+    sleep_delta = (
+        "--" if upcoming else compact_duration(result.sleep_debt_minutes, signed=True)
+    )
+    drivers = "pending" if upcoming else _compact_flags(result)
+
+    return [
+        Text(load, style=stress_style),
+        Text(stress_label, style=stress_style),
+        Text(_short_readiness(result), style=status_color(result.readiness_label)),
+        Text(sleep_delta, style=_sleep_delta_color(result.sleep_debt_minutes)),
+        Text(
+            "--" if upcoming else format_percent(recovery_score),
+            style="dim" if upcoming else value_color(recovery_score),
+        ),
+        truncate(result.exam.course, 26),
+        Text(truncate(drivers, 24), style="dim"),
+    ]
 
 
 def _short_readiness(result: ExamReadiness) -> str:
@@ -925,6 +991,16 @@ def _sleep_delta_color(value: float | int | None) -> str:
     return "green"
 
 
+def _baseline_cell(mean_text: str, std: float | None, unit: str = "") -> str:
+    if std is None:
+        return f"[dim]{mean_text}[/dim]"
+    return f"[dim]{mean_text} {_PLUSMINUS}{std:.0f}{unit}[/dim]"
+
+
+def _zscore_cell(value: float | None) -> str:
+    return f"[{zscore_color(value)}]{format_zscore(value)}[/]"
+
+
 def _print_compact_exam_detail(result: ExamReadiness, night_hr: NightHRSignal | None = None) -> None:
     label = result.readiness_label.casefold()
     score = "--" if result.readiness_score is None else f"{result.readiness_score:.0f}"
@@ -934,39 +1010,91 @@ def _print_compact_exam_detail(result: ExamReadiness, night_hr: NightHRSignal | 
     load_color = _stress_color(load_label)
     sleep_minutes = result.sleep.total_sleep_minutes if result.sleep else None
     recovery_score = result.recovery.recovery_score if result.recovery else None
-    sleep_line = (
-        f"{compact_duration(sleep_minutes)} vs "
-        f"{compact_duration(result.baseline_sleep_minutes)} baseline"
-    )
-    sleep_debt = compact_duration(result.sleep_debt_minutes, signed=True)
+    hrv = result.recovery.hrv_rmssd_milli if result.recovery else None
+    rhr = result.recovery.resting_heart_rate if result.recovery else None
+    strain = result.previous_cycle.strain if result.previous_cycle else None
 
+    nights = result.baseline_nights
+    nights_note = f"n={nights}" if nights else "n<2"
     console.print(
         f"[bold]{escape(result.exam.course)}[/bold] "
-        f"[dim]{format_compact_datetime(result.exam.exam_at)}[/dim]"
+        f"[dim]{format_compact_datetime(result.exam.exam_at)}  {_DOT}  baseline {nights_note}[/dim]"
     )
-    console.print(
-        f"[dim]{'sleep':<10}[/dim] {sleep_line:<28} "
-        f"{sleep_debt} {_sleep_debt_marker(result.sleep_debt_minutes)}"
+
+    table = Table(box=_SIMPLE_BOX, pad_edge=False, header_style="dim", expand=False)
+    table.add_column("metric", style="dim")
+    table.add_column("night", justify="right")
+    table.add_column("baseline (14d)", justify="right")
+    table.add_column(_DELTA, justify="right")
+    table.add_column("trend")
+    table.add_column("z", justify="right")
+
+    table.add_row(
+        "sleep",
+        compact_duration(sleep_minutes),
+        _baseline_cell(
+            compact_duration(result.baseline_sleep_minutes), result.baseline_sleep_std, "m"
+        ),
+        Text(
+            compact_duration(result.sleep_debt_minutes, signed=True),
+            style=_sleep_delta_color(result.sleep_debt_minutes),
+        ),
+        f"[cyan]{sparkline(result.sleep_series)}[/cyan]",
+        _zscore_cell(result.sleep_z),
     )
-    console.print(
-        f"[dim]{'recovery':<10}[/dim] "
-        f"{format_percent(recovery_score):<5} [green]{make_bar(recovery_score)}[/green]"
+    table.add_row(
+        "recovery",
+        Text(format_percent(recovery_score), style=value_color(recovery_score)),
+        _baseline_cell(format_percent(result.baseline_recovery_score), result.baseline_recovery_std),
+        _percentile_text(result.recovery_percentile),
+        f"[cyan]{sparkline(result.recovery_series)}[/cyan]",
+        _zscore_cell(result.recovery_z),
     )
-    console.print(f"[dim]{'hrv':<10}[/dim] {format_percent_delta(result.hrv_delta_percent)}")
-    console.print(f"[dim]{'rhr':<10}[/dim] {format_bpm_delta(result.rhr_delta_bpm)}")
-    console.print(
-        f"[dim]{'strain':<10}[/dim] "
-        f"{format_float(result.previous_cycle.strain if result.previous_cycle else None)}"
+    table.add_row(
+        "hrv",
+        f"{format_float(hrv)} ms" if hrv is not None else "n/a",
+        _baseline_cell(format_float(result.baseline_hrv), result.baseline_hrv_std, "ms"),
+        _delta_text(result.hrv_delta_percent, "%", good_high=True),
+        f"[cyan]{sparkline(result.hrv_series)}[/cyan]",
+        _zscore_cell(result.hrv_z),
     )
+    table.add_row(
+        "rhr",
+        f"{rhr:.0f} bpm" if rhr is not None else "n/a",
+        _baseline_cell(format_float(result.baseline_rhr), result.baseline_rhr_std, ""),
+        _delta_text(result.rhr_delta_bpm, " bpm", good_high=False),
+        f"[cyan]{sparkline(result.rhr_series)}[/cyan]",
+        _zscore_cell(result.rhr_z),
+    )
+    table.add_row("strain", format_float(strain), "[dim]prev cycle[/dim]", "", "", "")
+    console.print(_ascii_safe_table(table))
+
     console.print(
         f"[dim]{'score':<10}[/dim] "
         f"[{status_color(result.readiness_label)}]ready {label} {score:<3} "
-        f"{make_bar(result.readiness_score, width=12)}[/]   "
+        f"{colored_bar(result.readiness_score, width=12)}[/]   "
         f"[{load_color}]{load_label} {load_score:<7}[/] "
         f"[{load_color}]{stress_bar(stress.score if stress else None, width=12)}[/]"
     )
     console.print(f"[dim]{'note':<10}[/dim] {escape(result.summary)}")
     _print_night_hr_signal(night_hr)
+
+
+def _percentile_text(value: float | None) -> str:
+    if value is None:
+        return "[dim]n/a[/dim]"
+    color = value_color(value)
+    return f"[{color}]p{value:.0f}[/]"
+
+
+def _delta_text(value: float | None, unit: str, *, good_high: bool) -> Text:
+    if value is None:
+        return Text("n/a", style="dim")
+    if good_high:
+        style = "green" if value >= 0 else ("yellow" if value > -15 else "red")
+    else:
+        style = "green" if value <= 0 else ("yellow" if value < 5 else "red")
+    return Text(f"{value:+.0f}{unit}", style=style)
 
 
 def _print_night_hr_signal(signal: NightHRSignal | None) -> None:
@@ -1088,14 +1216,23 @@ def _print_compact_stress_drivers(result: ExamReadiness) -> None:
         return
 
     console.print(f"[bold]{escape(result.exam.course)}[/bold]")
-    console.print(f"[dim]{'driver':<18} {'points':>6}   {'effect':<12} note[/dim]")
+    table = Table(box=_SIMPLE_BOX, pad_edge=False, header_style="dim", expand=False)
+    table.add_column("driver", style="dim")
+    table.add_column("pts", justify="right")
+    table.add_column("share")
+    table.add_column("effect")
+    table.add_column("note", style="dim")
     for component in stress.components:
-        console.print(
-            f"{_driver_display_name(component.name):<18} "
-            f"+{component.points:<5}   "
-            f"{component.label:<12} "
-            f"{component.note}"
+        ratio_color = value_color(component.points, max_value=component.max_points, good_high=False)
+        bar = make_bar(component.points, max_value=component.max_points, width=10)
+        table.add_row(
+            _driver_display_name(component.name),
+            Text(f"+{component.points}", style=ratio_color),
+            f"[{ratio_color}]{bar}[/]",
+            Text(component.label, style=ratio_color if component.points else "dim"),
+            component.note,
         )
+    console.print(_ascii_safe_table(table))
 
     drivers = top_stress_drivers(stress.components)
     if drivers:
@@ -1164,7 +1301,7 @@ def _print_report(
             format_bpm_delta(result.rhr_delta_bpm),
             format_float(result.previous_cycle.strain if result.previous_cycle else None),
         )
-    console.print(table)
+    console.print(_ascii_safe_table(table))
 
     for result in ranked:
         console.print(_detail_panel(result))

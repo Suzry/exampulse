@@ -77,6 +77,81 @@ def test_analyze_exam_flags_low_readiness() -> None:
     assert "stress" not in result.summary.casefold()
 
 
+def test_analyze_exam_computes_statistical_context() -> None:
+    exam_at = datetime(2026, 6, 20, 10, tzinfo=UTC)
+    # Ten stable baseline nights, then a clearly worse night before the exam.
+    sleeps = [
+        _sleep(index, exam_at - timedelta(days=11 - index), 420)
+        for index in range(1, 11)
+    ]
+    recoveries = [_recovery(index, 70, 45, 60) for index in range(1, 11)]
+    bad_night = _sleep(99, exam_at - timedelta(hours=4), 300)
+    sleeps.append(bad_night)
+    recoveries.append(
+        WhoopRecovery(
+            sleep_id="sleep-99",
+            cycle_id=99,
+            score_state="SCORED",
+            recovery_score=35,
+            hrv_rmssd_milli=30,
+            resting_heart_rate=70,
+        )
+    )
+
+    result = analyze_exam(
+        Exam(course="Stats", exam_at=exam_at),
+        sleeps=sleeps,
+        recoveries=recoveries,
+        cycles=[],
+    )
+
+    assert result.baseline_nights == 10
+    # Perfectly stable baseline -> zero std -> z-score is undefined (None).
+    assert result.baseline_recovery_std == 0
+    assert result.recovery_z is None
+    # Percentile rank still works: the bad night sits below the whole baseline.
+    assert result.recovery_percentile == 0
+
+
+def test_analyze_exam_z_scores_and_series() -> None:
+    exam_at = datetime(2026, 6, 20, 10, tzinfo=UTC)
+    sleeps = [
+        _sleep(index, exam_at - timedelta(days=11 - index), 420 + index)
+        for index in range(1, 11)
+    ]
+    recoveries = [
+        _recovery(index, 70 + index % 3, 45 + index % 4, 60 + index % 3)
+        for index in range(1, 11)
+    ]
+    sleeps.append(_sleep(99, exam_at - timedelta(hours=4), 300))
+    recoveries.append(
+        WhoopRecovery(
+            sleep_id="sleep-99",
+            cycle_id=99,
+            score_state="SCORED",
+            recovery_score=35,
+            hrv_rmssd_milli=30,
+            resting_heart_rate=72,
+        )
+    )
+
+    result = analyze_exam(
+        Exam(course="Stats", exam_at=exam_at),
+        sleeps=sleeps,
+        recoveries=recoveries,
+        cycles=[],
+    )
+
+    assert result.baseline_nights == 10
+    assert result.baseline_recovery_std is not None
+    assert result.recovery_z is not None and result.recovery_z < 0
+    assert result.rhr_z is not None and result.rhr_z > 0
+    assert result.recovery_percentile is not None
+    # Series carry the 10 baseline nights plus the night-before value.
+    assert len(result.recovery_series) == 11
+    assert len(result.sleep_series) == 11
+
+
 def test_analyze_exam_ignores_nap_when_main_sleep_exists() -> None:
     exam_at = datetime(2026, 6, 16, 10, tzinfo=UTC)
     main_sleep = _sleep(1, exam_at - timedelta(hours=7), 400)

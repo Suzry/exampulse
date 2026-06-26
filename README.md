@@ -76,6 +76,25 @@ exampulse export
 exampulse watch --every 30
 ```
 
+## Reading the report
+
+`exampulse report` prints a compact dashboard that frames every exam against
+your own 14-day baseline rather than absolute numbers:
+
+- **Leaderboard** ranks exams by physiological load, with color-coded readiness,
+  sleep debt, and recovery.
+- **Exam detail** shows, per metric (sleep, recovery, HRV, RHR), the night-before
+  value, the baseline `mean ± σ`, the delta, a 14-day **trend sparkline**, and a
+  **z-score** (how many standard deviations the night sat from your norm).
+  Recovery also reports a percentile rank (`p0`–`p100`) within the baseline.
+- **Stress drivers** break the Physiological Load Index into weighted components
+  with per-driver contribution bars.
+
+The night-before sleep is excluded from its own baseline so the comparison is
+against the *other* nights. Colors and box-drawing degrade gracefully to ASCII
+on terminals without UTF-8. Use `exampulse report --classic` for the plain
+boxed layout.
+
 ## WHOOP-only raw HR status
 
 - Exampulse uses official WHOOP APIs.

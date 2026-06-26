@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
-from statistics import mean
+from statistics import mean, pstdev
 
 from app.core.models import Exam, WhoopCycle, WhoopRecovery, WhoopSleep
 from app.utils.time import to_utc
@@ -26,6 +26,21 @@ class ExamReadiness:
     readiness_label: str
     flags: list[str]
     summary: str
+    # Statistical context (defaults keep older constructors working).
+    baseline_nights: int = 0
+    baseline_sleep_std: float | None = None
+    baseline_recovery_std: float | None = None
+    baseline_hrv_std: float | None = None
+    baseline_rhr_std: float | None = None
+    sleep_z: float | None = None
+    recovery_z: float | None = None
+    hrv_z: float | None = None
+    rhr_z: float | None = None
+    recovery_percentile: float | None = None
+    sleep_series: list[float] = field(default_factory=list)
+    recovery_series: list[float] = field(default_factory=list)
+    hrv_series: list[float] = field(default_factory=list)
+    rhr_series: list[float] = field(default_factory=list)
 
 
 def clamp(value: float, lower: float = 0, upper: float = 100) -> float:
@@ -35,6 +50,30 @@ def clamp(value: float, lower: float = 0, upper: float = 100) -> float:
 def _avg(values: list[float | int | None]) -> float | None:
     usable = [float(value) for value in values if value is not None]
     return mean(usable) if usable else None
+
+
+def _std(values: list[float | int | None]) -> float | None:
+    """Population standard deviation; needs at least two samples."""
+    usable = [float(value) for value in values if value is not None]
+    return pstdev(usable) if len(usable) >= 2 else None
+
+
+def _zscore(
+    value: float | None,
+    baseline_mean: float | None,
+    baseline_std: float | None,
+) -> float | None:
+    if value is None or baseline_mean is None or not baseline_std:
+        return None
+    return (value - baseline_mean) / baseline_std
+
+
+def _percentile_rank(value: float | None, values: list[float | int | None]) -> float | None:
+    usable = [float(item) for item in values if item is not None]
+    if value is None or not usable:
+        return None
+    at_or_below = sum(1 for item in usable if item <= value)
+    return (at_or_below / len(usable)) * 100
 
 
 def _sleep_minutes(sleep: WhoopSleep | None) -> float | None:
@@ -218,15 +257,51 @@ def analyze_exam(
     previous_cycle = _last_cycle_before(exam.exam_at, cycles)
 
     baseline_sleeps = _baseline_sleeps(exam.exam_at, sleeps)
+    # The night-before sleep falls inside the 14-day window; exclude it so the
+    # baseline (and z-scores/percentiles) compare it against the *other* nights.
+    if sleep is not None:
+        baseline_sleeps = [night for night in baseline_sleeps if night.id != sleep.id]
     baseline_recoveries = _baseline_recoveries(baseline_sleeps, recoveries)
 
     sleep_minutes = _sleep_minutes(sleep)
+
+    # Chronological baseline series (oldest -> newest) for trend sparklines.
+    ordered_sleeps = sorted(baseline_sleeps, key=lambda item: to_utc(item.end))
+    recovery_by_sleep = {item.sleep_id: item for item in baseline_recoveries}
+    sleep_series: list[float] = []
+    recovery_series: list[float] = []
+    hrv_series: list[float] = []
+    rhr_series: list[float] = []
+    for night in ordered_sleeps:
+        night_minutes = _sleep_minutes(night)
+        if night_minutes is not None:
+            sleep_series.append(night_minutes)
+        linked = recovery_by_sleep.get(night.id)
+        if linked is None:
+            continue
+        if linked.recovery_score is not None:
+            recovery_series.append(float(linked.recovery_score))
+        if linked.hrv_rmssd_milli is not None:
+            hrv_series.append(float(linked.hrv_rmssd_milli))
+        if linked.resting_heart_rate is not None:
+            rhr_series.append(float(linked.resting_heart_rate))
+
     baseline_sleep = _avg([_sleep_minutes(sleep) for sleep in baseline_sleeps])
     baseline_recovery = _avg(
         [recovery.recovery_score for recovery in baseline_recoveries]
     )
     baseline_hrv = _avg([recovery.hrv_rmssd_milli for recovery in baseline_recoveries])
     baseline_rhr = _avg(
+        [recovery.resting_heart_rate for recovery in baseline_recoveries]
+    )
+    baseline_sleep_std = _std([_sleep_minutes(sleep) for sleep in baseline_sleeps])
+    baseline_recovery_std = _std(
+        [recovery.recovery_score for recovery in baseline_recoveries]
+    )
+    baseline_hrv_std = _std(
+        [recovery.hrv_rmssd_milli for recovery in baseline_recoveries]
+    )
+    baseline_rhr_std = _std(
         [recovery.resting_heart_rate for recovery in baseline_recoveries]
     )
 
@@ -263,6 +338,24 @@ def analyze_exam(
     )
     rhr_delta = rhr - baseline_rhr if rhr is not None and baseline_rhr is not None else None
 
+    sleep_z = _zscore(sleep_minutes, baseline_sleep, baseline_sleep_std)
+    recovery_z = _zscore(recovery_score, baseline_recovery, baseline_recovery_std)
+    hrv_z = _zscore(hrv, baseline_hrv, baseline_hrv_std)
+    rhr_z = _zscore(rhr, baseline_rhr, baseline_rhr_std)
+    recovery_percentile = _percentile_rank(
+        recovery_score, [item.recovery_score for item in baseline_recoveries]
+    )
+
+    # Append the night-before value as the final point so trends show the dip.
+    if sleep_minutes is not None:
+        sleep_series.append(sleep_minutes)
+    if recovery_score is not None:
+        recovery_series.append(recovery_score)
+    if hrv is not None:
+        hrv_series.append(hrv)
+    if rhr is not None:
+        rhr_series.append(rhr)
+
     readiness = _weighted_score(
         recovery_score=recovery_score,
         sleep_score=_sleep_score(sleep, sleep_minutes, baseline_sleep),
@@ -296,4 +389,18 @@ def analyze_exam(
         readiness_label=label,
         flags=flags,
         summary=summary,
+        baseline_nights=len(baseline_sleeps),
+        baseline_sleep_std=baseline_sleep_std,
+        baseline_recovery_std=baseline_recovery_std,
+        baseline_hrv_std=baseline_hrv_std,
+        baseline_rhr_std=baseline_rhr_std,
+        sleep_z=sleep_z,
+        recovery_z=recovery_z,
+        hrv_z=hrv_z,
+        rhr_z=rhr_z,
+        recovery_percentile=recovery_percentile,
+        sleep_series=sleep_series,
+        recovery_series=recovery_series,
+        hrv_series=hrv_series,
+        rhr_series=rhr_series,
     )
