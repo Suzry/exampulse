@@ -3,7 +3,7 @@ from __future__ import annotations
 import secrets
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import urlencode, urlparse, parse_qs
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 from rich.console import Console

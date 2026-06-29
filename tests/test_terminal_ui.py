@@ -148,7 +148,7 @@ def test_compact_report_shows_upcoming_without_fake_detail_fields(monkeypatch) -
     test_console = Console(record=True, width=100, color_system=None)
     monkeypatch.setattr(cli_main, "console", test_console)
 
-    cli_main._print_compact_report([_upcoming_result()], sync_run=None)
+    cli_main._print_compact_report([_upcoming_result()], sync_run=None, full=True)
     output = test_console.export_text()
 
     assert "upcoming" in output.casefold()
@@ -161,11 +161,39 @@ def test_compact_report_shows_upcoming_without_fake_detail_fields(monkeypatch) -
     assert "strain" not in output.casefold()
 
 
+def test_brief_report_is_a_single_table_without_detail_sections(monkeypatch) -> None:
+    test_console = Console(record=True, width=100, color_system=None)
+    monkeypatch.setattr(cli_main, "console", test_console)
+
+    cli_main._print_compact_report([_analyzed_result()], sync_run=None)
+    output = test_console.export_text()
+
+    # The concise default shows the brief stress table...
+    assert "EXAM STRESS" in output
+    assert "Differential" in output
+    # ...but not the verbose per-exam sections.
+    assert "EXAM DETAIL" not in output
+    assert "STRESS DRIVERS" not in output
+    assert "NIGHT HR SIGNAL" not in output
+    assert "--full" in output
+
+
+def test_full_report_includes_detail_sections(monkeypatch) -> None:
+    test_console = Console(record=True, width=100, color_system=None)
+    monkeypatch.setattr(cli_main, "console", test_console)
+
+    cli_main._print_compact_report([_analyzed_result()], sync_run=None, full=True)
+    output = test_console.export_text()
+
+    assert "EXAM DETAIL" in output
+    assert "STRESS DRIVERS" in output
+
+
 def test_upcoming_exams_do_not_fake_sleep_hr_values(monkeypatch) -> None:
     test_console = Console(record=True, width=100, color_system=None)
     monkeypatch.setattr(cli_main, "console", test_console)
 
-    cli_main._print_compact_report([_upcoming_result()], sync_run=None)
+    cli_main._print_compact_report([_upcoming_result()], sync_run=None, full=True)
     output = test_console.export_text()
 
     assert "pending night-before sleep stream data" in output
@@ -177,7 +205,9 @@ def test_compact_report_keeps_upcoming_out_of_stress_drivers(monkeypatch) -> Non
     test_console = Console(record=True, width=100, color_system=None)
     monkeypatch.setattr(cli_main, "console", test_console)
 
-    cli_main._print_compact_report([_analyzed_result(), _upcoming_result()], sync_run=None)
+    cli_main._print_compact_report(
+        [_analyzed_result(), _upcoming_result()], sync_run=None, full=True
+    )
     output = test_console.export_text()
     stress_section = output.split("STRESS DRIVERS", 1)[1].split("UPCOMING", 1)[0]
 

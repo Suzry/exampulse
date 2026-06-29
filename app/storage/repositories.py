@@ -16,6 +16,7 @@ from app.core.models import (
     WhoopRecovery,
     WhoopSleep,
     WhoopSleepStreamPoint,
+    WhoopWorkout,
 )
 from app.utils.time import parse_datetime, utc_now
 
@@ -313,6 +314,111 @@ def list_research_raw_hr_points(
     if source is not None:
         statement = statement.where(ResearchRawHRPoint.source == source)
     return list(session.exec(statement.order_by(ResearchRawHRPoint.timestamp)))
+
+
+def upsert_whoop_workouts(
+    session: Session,
+    *,
+    workouts: list[dict[str, Any]],
+) -> int:
+    saved = 0
+    for workout in workouts:
+        start = parse_datetime(workout["start"])
+        name = workout.get("activity_name") or "Activity"
+        existing = session.exec(
+            select(WhoopWorkout).where(
+                WhoopWorkout.start == start,
+                WhoopWorkout.activity_name == name,
+            )
+        ).first()
+        values = {
+            "end": parse_datetime(workout["end"]),
+            "timezone_offset": workout.get("timezone_offset"),
+            "duration_minutes": workout.get("duration_minutes"),
+            "strain": workout.get("strain"),
+            "energy_cal": workout.get("energy_cal"),
+            "max_hr": workout.get("max_hr"),
+            "avg_hr": workout.get("avg_hr"),
+            "hr_zone1_percent": workout.get("hr_zone1_percent"),
+            "hr_zone2_percent": workout.get("hr_zone2_percent"),
+            "hr_zone3_percent": workout.get("hr_zone3_percent"),
+            "hr_zone4_percent": workout.get("hr_zone4_percent"),
+            "hr_zone5_percent": workout.get("hr_zone5_percent"),
+            "source": workout.get("source", "whoop_export"),
+        }
+        if existing is None:
+            existing = WhoopWorkout(start=start, activity_name=name, **values)
+        else:
+            for key, value in values.items():
+                setattr(existing, key, value)
+        session.add(existing)
+        saved += 1
+    session.commit()
+    return saved
+
+
+def list_whoop_workouts(session: Session) -> list[WhoopWorkout]:
+    return list(session.exec(select(WhoopWorkout).order_by(WhoopWorkout.start)))
+
+
+def delete_all_whoop_summary(session: Session) -> None:
+    """Clear synced WHOOP sleep/recovery/cycle data (keeps exams and workouts)."""
+    session.exec(delete(WhoopSleepStreamPoint))
+    session.exec(delete(WhoopRecovery))
+    session.exec(delete(WhoopSleep))
+    session.exec(delete(WhoopCycle))
+    session.commit()
+
+
+def upsert_csv_summary(
+    session: Session,
+    *,
+    cycles: list[dict[str, Any]],
+    sleeps: list[dict[str, Any]],
+    recoveries: list[dict[str, Any]],
+) -> None:
+    """Upsert flat cycle/sleep/recovery rows parsed from a WHOOP CSV export."""
+    for payload in cycles:
+        cycle = session.get(WhoopCycle, payload["id"])
+        values = {
+            "start": parse_datetime(payload["start"]),
+            "end": parse_datetime(payload["end"]) if payload.get("end") else None,
+            "score_state": payload.get("score_state", "UNKNOWN"),
+            "strain": payload.get("strain"),
+            "average_heart_rate": payload.get("average_heart_rate"),
+            "max_heart_rate": payload.get("max_heart_rate"),
+            "raw_json": payload.get("raw_json", ""),
+        }
+        if cycle is None:
+            cycle = WhoopCycle(id=payload["id"], **values)
+        else:
+            for key, value in values.items():
+                setattr(cycle, key, value)
+        session.add(cycle)
+
+    for payload in sleeps:
+        sleep = session.get(WhoopSleep, payload["id"])
+        values = {key: value for key, value in payload.items() if key != "id"}
+        values["start"] = parse_datetime(values["start"])
+        values["end"] = parse_datetime(values["end"])
+        if sleep is None:
+            sleep = WhoopSleep(id=payload["id"], **values)
+        else:
+            for key, value in values.items():
+                setattr(sleep, key, value)
+        session.add(sleep)
+
+    for payload in recoveries:
+        recovery = session.get(WhoopRecovery, payload["sleep_id"])
+        values = {key: value for key, value in payload.items() if key != "sleep_id"}
+        if recovery is None:
+            recovery = WhoopRecovery(sleep_id=payload["sleep_id"], **values)
+        else:
+            for key, value in values.items():
+                setattr(recovery, key, value)
+        session.add(recovery)
+
+    session.commit()
 
 
 def save_exam_insight(

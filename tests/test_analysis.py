@@ -152,6 +152,20 @@ def test_analyze_exam_z_scores_and_series() -> None:
     assert len(result.sleep_series) == 11
 
 
+def test_analyze_exam_computes_hours_awake_before_exam() -> None:
+    exam_at = datetime(2026, 6, 25, 10, 15, tzinfo=UTC)
+    # Last sleep ended ~16h before the exam (an all-nighter, afternoon nap).
+    nap = _sleep(1, exam_at - timedelta(hours=16), 300)
+    result = analyze_exam(
+        Exam(course="Software Testing", exam_at=exam_at),
+        sleeps=[nap],
+        recoveries=[_recovery(1, 50, 35, 66)],
+        cycles=[],
+    )
+    assert result.awake_hours_before is not None
+    assert 15.5 <= result.awake_hours_before <= 16.5
+
+
 def test_analyze_exam_ignores_nap_when_main_sleep_exists() -> None:
     exam_at = datetime(2026, 6, 16, 10, tzinfo=UTC)
     main_sleep = _sleep(1, exam_at - timedelta(hours=7), 400)

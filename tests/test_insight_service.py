@@ -5,7 +5,7 @@ from datetime import timedelta
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.core.models import Exam, ExamInsight, WhoopCycle, WhoopRecovery, WhoopSleep
-from app.services.insight_service import InsightService, UPCOMING_EXAM_MESSAGE
+from app.services.insight_service import UPCOMING_EXAM_MESSAGE, InsightService
 from app.utils.time import utc_now
 
 

@@ -37,6 +37,7 @@ class ExamReadiness:
     hrv_z: float | None = None
     rhr_z: float | None = None
     recovery_percentile: float | None = None
+    awake_hours_before: float | None = None
     sleep_series: list[float] = field(default_factory=list)
     recovery_series: list[float] = field(default_factory=list)
     hrv_series: list[float] = field(default_factory=list)
@@ -264,6 +265,11 @@ def analyze_exam(
     baseline_recoveries = _baseline_recoveries(baseline_sleeps, recoveries)
 
     sleep_minutes = _sleep_minutes(sleep)
+    awake_hours_before = (
+        (to_utc(exam.exam_at) - to_utc(sleep.end)).total_seconds() / 3600
+        if sleep is not None
+        else None
+    )
 
     # Chronological baseline series (oldest -> newest) for trend sparklines.
     ordered_sleeps = sorted(baseline_sleeps, key=lambda item: to_utc(item.end))
@@ -399,6 +405,7 @@ def analyze_exam(
         hrv_z=hrv_z,
         rhr_z=rhr_z,
         recovery_percentile=recovery_percentile,
+        awake_hours_before=awake_hours_before,
         sleep_series=sleep_series,
         recovery_series=recovery_series,
         hrv_series=hrv_series,

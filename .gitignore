@@ -13,3 +13,10 @@ exampulse.db
 dist/
 build/
 *.egg-info/
+
+# Personal data — kept local, never published
+exams.json
+exports/
+mywhoopdata/
+my_whoop_data.zip
+*_whoop_data.zip

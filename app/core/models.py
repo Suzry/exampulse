@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
 
 from sqlalchemy import Column, String
 from sqlalchemy.types import TypeDecorator
@@ -32,7 +31,7 @@ def datetime_column(*, nullable: bool = False, index: bool = False) -> Column:
 class OAuthToken(SQLModel, table=True):
     __table_args__ = (UniqueConstraint("provider", name="uq_oauth_provider"),)
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     provider: str = Field(default="whoop", index=True)
     access_token: str
     refresh_token: str | None = None
@@ -75,7 +74,7 @@ class WhoopSleepStreamPoint(SQLModel, table=True):
         UniqueConstraint("sleep_id", "timestamp", name="uq_sleep_stream_sleep_time"),
     )
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     sleep_id: str = Field(index=True)
     timestamp: datetime = Field(sa_column=datetime_column(index=True))
     hr: int
@@ -124,10 +123,40 @@ class WhoopCycle(SQLModel, table=True):
     raw_json: str = ""
 
 
+class WhoopWorkout(SQLModel, table=True):
+    """A logged WHOOP activity (from the official CSV data export).
+
+    WHOOP does not export a per-minute HR timeline, but each activity row
+    carries an average HR, max HR, and an HR-zone distribution for that window.
+    """
+
+    __table_args__ = (
+        UniqueConstraint("start", "activity_name", name="uq_workout_start_name"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    start: datetime = Field(sa_column=datetime_column(index=True))
+    end: datetime = Field(sa_column=datetime_column(index=True))
+    timezone_offset: str | None = None
+    activity_name: str = Field(default="Activity", index=True)
+    duration_minutes: float | None = None
+    strain: float | None = None
+    energy_cal: float | None = None
+    max_hr: int | None = None
+    avg_hr: int | None = None
+    hr_zone1_percent: float | None = None
+    hr_zone2_percent: float | None = None
+    hr_zone3_percent: float | None = None
+    hr_zone4_percent: float | None = None
+    hr_zone5_percent: float | None = None
+    source: str = Field(default="whoop_export", index=True)
+    created_at: datetime = Field(default_factory=utc_now, sa_column=datetime_column())
+
+
 class Exam(SQLModel, table=True):
     __table_args__ = (UniqueConstraint("course", "exam_at", name="uq_exam_course_time"),)
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     course: str = Field(index=True)
     exam_at: datetime = Field(sa_column=datetime_column(index=True))
     grade: float | None = None
@@ -139,7 +168,7 @@ class Exam(SQLModel, table=True):
 class ExamInsight(SQLModel, table=True):
     __table_args__ = (UniqueConstraint("exam_id", name="uq_exam_insight_exam"),)
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     exam_id: int = Field(foreign_key="exam.id", index=True)
     readiness_score: float | None = Field(default=None, index=True)
     readiness_label: str = Field(default="UNKNOWN", index=True)
@@ -152,7 +181,7 @@ class ExamInsight(SQLModel, table=True):
 
 
 class SyncRun(SQLModel, table=True):
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     source: str = Field(default="whoop", index=True)
     started_at: datetime = Field(default_factory=utc_now, sa_column=datetime_column())
     completed_at: datetime | None = Field(
@@ -172,7 +201,7 @@ class ResearchRawHRPoint(SQLModel, table=True):
         UniqueConstraint("timestamp", "source", name="uq_research_hr_time_source"),
     )
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     timestamp: datetime = Field(sa_column=datetime_column(index=True))
     hr: int
     source: str = Field(index=True)

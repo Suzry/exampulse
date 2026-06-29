@@ -10,7 +10,10 @@ from app.core.analysis import ExamReadiness
 from app.core.models import Exam, WhoopSleep, WhoopSleepStreamPoint
 from app.core.night_hr import analyze_night_hr_signal
 from app.services.sync_service import _extract_hr_stream_points
-from app.storage.repositories import list_sleep_stream_points, upsert_sleep_stream_points
+from app.storage.repositories import (
+    list_sleep_stream_points,
+    upsert_sleep_stream_points,
+)
 
 
 def _session():
@@ -120,7 +123,9 @@ def test_missing_sleep_stream_data_does_not_crash_compact_report(monkeypatch) ->
     test_console = Console(record=True, width=100, color_system=None)
     monkeypatch.setattr(cli_main, "console", test_console)
 
-    cli_main._print_compact_report([_result(exam_at, sleep)], sync_run=None, sleeps=[sleep])
+    cli_main._print_compact_report(
+        [_result(exam_at, sleep)], sync_run=None, sleeps=[sleep], full=True
+    )
     output = test_console.export_text()
 
     assert "NIGHT HR SIGNAL" in output

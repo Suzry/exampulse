@@ -1,17 +1,16 @@
 from __future__ import annotations
 
 import csv
-import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
-from statistics import mean, pstdev
 
 from sqlmodel import Session
 
+from app.core.exam_hr import exam_window_hr
 from app.core.models import Exam, ResearchRawHRPoint
 from app.storage import repositories
-from app.utils.time import parse_datetime, to_utc
+from app.utils.time import parse_datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,22 +63,76 @@ class RawHRDataError(ValueError):
     pass
 
 
+# Common column-name aliases so per-minute exports from different tools import
+# without renaming. Matching is case-insensitive and whitespace-insensitive.
+_TIMESTAMP_ALIASES = (
+    "timestamp",
+    "time",
+    "datetime",
+    "date",
+    "ts",
+    "start",
+    "start time",
+    "time (iso)",
+)
+_HR_ALIASES = (
+    "hr",
+    "heart_rate",
+    "heart rate",
+    "heartrate",
+    "bpm",
+    "heart rate (bpm)",
+    "hr (bpm)",
+    "value",
+)
+
+
+def _resolve_column(
+    fieldnames: list[str], requested: str | None, aliases: tuple[str, ...], label: str
+) -> str:
+    lookup = {(name or "").strip().casefold(): name for name in fieldnames}
+    if requested:
+        match = lookup.get(requested.strip().casefold())
+        if match is None:
+            raise ValueError(f"Column {requested!r} not found in CSV.")
+        return match
+    for alias in aliases:
+        if alias in lookup:
+            return lookup[alias]
+    raise ValueError(
+        f"Could not find a {label} column. Looked for {', '.join(aliases[:4])}, ... "
+        f"Pass an explicit column name to override."
+    )
+
+
 class RawHRService:
     def __init__(self, session: Session):
         self.session = session
 
-    def import_csv(self, path: str | Path, *, source: str) -> RawHRImportSummary:
+    def import_csv(
+        self,
+        path: str | Path,
+        *,
+        source: str,
+        timestamp_col: str | None = None,
+        hr_col: str | None = None,
+    ) -> RawHRImportSummary:
         points: list[dict] = []
         with Path(path).open(newline="", encoding="utf-8") as handle:
             reader = csv.DictReader(handle)
             if reader.fieldnames is None:
-                raise ValueError("CSV must include timestamp and hr columns.")
-            missing = {"timestamp", "hr"} - set(reader.fieldnames)
-            if missing:
-                raise ValueError("CSV must include timestamp and hr columns.")
+                raise ValueError("CSV is empty or has no header row.")
+            ts_field = _resolve_column(
+                reader.fieldnames, timestamp_col, _TIMESTAMP_ALIASES, "timestamp"
+            )
+            hr_field = _resolve_column(reader.fieldnames, hr_col, _HR_ALIASES, "heart-rate")
             for row in reader:
-                timestamp = parse_datetime(str(row["timestamp"]))
-                hr = int(round(float(row["hr"])))
+                raw_ts = str(row.get(ts_field) or "").strip()
+                raw_hr = str(row.get(hr_field) or "").strip()
+                if not raw_ts or not raw_hr:
+                    continue
+                timestamp = parse_datetime(raw_ts)
+                hr = int(round(float(raw_hr)))
                 points.append({"timestamp": timestamp, "hr": hr})
 
         rows = repositories.upsert_research_raw_hr_points(
@@ -107,51 +160,23 @@ class RawHRService:
 
     def exam_window(self, exam_name: str, *, source: str | None = None) -> ExamWindowHRResult:
         exam = self._find_exam(exam_name)
-        window_start = to_utc(exam.exam_at)
-        window_end = _exam_end(exam)
-        baseline_start = window_start - timedelta(minutes=90)
         points = repositories.list_research_raw_hr_points(self.session, source=source)
 
-        exam_points = [
-            point for point in points if window_start <= to_utc(point.timestamp) < window_end
-        ]
-        baseline_points = [
-            point
-            for point in points
-            if baseline_start <= to_utc(point.timestamp) < window_start
-        ]
-
-        if not exam_points or not baseline_points:
+        result = exam_window_hr(exam, points)
+        if result.status != "ok":
             raise RawHRDataError("not enough raw HR data")
-
-        avg_exam = _avg_hr(exam_points)
-        avg_baseline = _avg_hr(baseline_points)
-        dbpm = (
-            avg_exam - avg_baseline
-            if avg_exam is not None and avg_baseline is not None
-            else None
-        )
-        elevated_percent = None
-        if avg_baseline is not None and exam_points:
-            elevated = [point for point in exam_points if point.hr > avg_baseline + 10]
-            elevated_percent = (len(elevated) / len(exam_points)) * 100
-
-        z_like = None
-        baseline_stddev = _stddev_hr(baseline_points)
-        if dbpm is not None and baseline_stddev and baseline_stddev > 0:
-            z_like = dbpm / baseline_stddev
 
         return ExamWindowHRResult(
             exam=exam,
-            window_start=window_start,
-            window_end=window_end,
-            points=len(exam_points),
-            baseline_points=len(baseline_points),
-            avg_hr_exam=avg_exam,
-            avg_hr_baseline=avg_baseline,
-            dbpm=dbpm,
-            elevated_percent=elevated_percent,
-            z_like=z_like,
+            window_start=result.window_start,
+            window_end=result.window_end,
+            points=result.exam_points,
+            baseline_points=result.baseline_points,
+            avg_hr_exam=result.avg_exam,
+            avg_hr_baseline=result.avg_baseline,
+            dbpm=result.dbpm,
+            elevated_percent=result.elevated_percent,
+            z_like=result.z,
         )
 
     def _find_exam(self, exam_name: str) -> Exam:
@@ -164,33 +189,3 @@ class RawHRService:
         if not matches:
             raise ValueError(f"No exam found matching {exam_name!r}.")
         return matches[0]
-
-
-def _exam_end(exam: Exam) -> datetime:
-    start = to_utc(exam.exam_at)
-    match = re.search(r"\bend\s*:\s*(\d{1,2}):(\d{2})", exam.notes or "", re.IGNORECASE)
-    if not match:
-        return start + timedelta(hours=2)
-
-    local_start = exam.exam_at
-    end_local = local_start.replace(
-        hour=int(match.group(1)),
-        minute=int(match.group(2)),
-        second=0,
-        microsecond=0,
-    )
-    if end_local <= local_start:
-        end_local += timedelta(days=1)
-    return to_utc(end_local)
-
-
-def _avg_hr(points: list[ResearchRawHRPoint]) -> float | None:
-    if not points:
-        return None
-    return mean(point.hr for point in points)
-
-
-def _stddev_hr(points: list[ResearchRawHRPoint]) -> float | None:
-    if len(points) < 2:
-        return None
-    return pstdev(point.hr for point in points)

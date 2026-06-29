@@ -87,6 +87,7 @@ def test_report_shows_forbidden_sleep_stream_status(monkeypatch) -> None:
         [_upcoming_result()],
         sync_run=None,
         sleep_stream_forbidden=True,
+        full=True,
     )
     output = test_console.export_text()
 

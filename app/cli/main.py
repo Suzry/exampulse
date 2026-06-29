@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import math
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
 import typer
 from rich import box
@@ -14,8 +14,20 @@ from rich.table import Table
 from rich.text import Text
 
 from app.core.analysis import ExamReadiness
+from app.core.exam_hr import (
+    ExamActivityHR,
+    ExamRawHR,
+    PreExamHR,
+    exam_window_hr,
+    match_exam_activity,
+    pre_exam_window_hr,
+)
 from app.core.models import Exam, WhoopCycle, WhoopRecovery, WhoopSleep
-from app.core.night_hr import NightHRSignal, analyze_night_hr_signal
+from app.core.night_hr import (
+    NightHRSignal,
+    analyze_night_hr_from_raw,
+    analyze_night_hr_signal,
+)
 from app.core.stress import (
     StressResult,
     compute_exam_stress_index,
@@ -24,28 +36,29 @@ from app.core.stress import (
 )
 from app.integrations.whoop_client import WhoopAPIError
 from app.integrations.whoop_oauth import OAuthError, run_local_oauth_flow
+from app.research.raw_hr.service import RawHRDataError, RawHRService
 from app.services.demo_seed_service import DemoSeedService
 from app.services.exam_service import ExamImportError, ExamService
 from app.services.export_service import ExportService
 from app.services.insight_service import InsightService
-from app.services.sync_service import SyncService
-from app.services.sync_service import redact_sleep_id
+from app.services.sync_service import SyncService, redact_sleep_id
+from app.services.whoop_export_service import WhoopExportError, WhoopExportService
 from app.services.whoop_raw_check_service import (
     SLEEP_STREAM_FORBIDDEN,
     WhoopRawCheckService,
 )
-from app.research.raw_hr.service import RawHRDataError, RawHRService
 from app.storage.db import get_session, init_db
 from app.storage.repositories import (
     has_demo_data,
-    latest_whoop_raw_check,
     latest_sync_run,
+    latest_whoop_raw_check,
     list_cycles,
     list_recoveries,
-    list_sleeps,
+    list_research_raw_hr_points,
     list_sleep_stream_points,
+    list_sleeps,
+    list_whoop_workouts,
 )
-from app.utils.time import to_utc, utc_now
 from app.utils.formatters import (
     format_bpm_delta,
     format_float,
@@ -60,7 +73,6 @@ from app.utils.terminal_ui import (
     format_zscore,
     horizontal_rule,
     make_bar,
-    sleep_debt_marker,
     sparkline,
     status_color,
     supports_unicode,
@@ -68,6 +80,7 @@ from app.utils.terminal_ui import (
     value_color,
     zscore_color,
 )
+from app.utils.time import to_utc, utc_now
 
 console = Console()
 
@@ -76,7 +89,6 @@ _UNICODE = supports_unicode()
 _DOT = "·" if _UNICODE else "-"
 _DELTA = "Δ" if _UNICODE else "d"
 _PLUSMINUS = "±" if _UNICODE else "+/-"
-_BANNER_BOX = box.DOUBLE if _UNICODE else box.ASCII_DOUBLE_HEAD
 _TABLE_BOX = box.SIMPLE_HEAVY if _UNICODE else box.ASCII
 _SIMPLE_BOX = box.SIMPLE if _UNICODE else box.ASCII
 app = typer.Typer(no_args_is_help=True)
@@ -221,12 +233,24 @@ def import_raw_hr_csv(
         "--source",
         help="Source label for this WHOOP-owned HR export.",
     ),
+    timestamp_col: str | None = typer.Option(
+        None, "--timestamp-col", help="Override the timestamp column name."
+    ),
+    hr_col: str | None = typer.Option(
+        None, "--hr-col", help="Override the heart-rate column name."
+    ),
 ) -> None:
-    """Import real WHOOP-owned raw HR points from CSV."""
+    """Import real WHOOP-owned per-minute raw HR points from CSV.
+
+    Timestamp and HR columns are auto-detected (timestamp/time/datetime, hr/bpm/
+    heart rate, ...). Use --timestamp-col / --hr-col to override.
+    """
     _ensure_db()
     try:
         with get_session() as session:
-            summary = RawHRService(session).import_csv(path, source=source)
+            summary = RawHRService(session).import_csv(
+                path, source=source, timestamp_col=timestamp_col, hr_col=hr_col
+            )
         console.print(
             "[green]Research raw HR imported:[/green] "
             f"{summary.rows_imported} point(s) from {summary.source}."
@@ -248,7 +272,7 @@ def audit_raw_hr() -> None:
 @raw_hr_app.command("exam-window")
 def research_exam_window(
     exam: str = typer.Option(..., "--exam", help="Course name or substring."),
-    source: Optional[str] = typer.Option(None, "--source", help="Optional source filter."),
+    source: str | None = typer.Option(None, "--source", help="Optional source filter."),
 ) -> None:
     """Compare exam-window HR against the 90-minute local baseline."""
     _ensure_db()
@@ -274,6 +298,73 @@ def whoop_raw_check() -> None:
     _print_whoop_raw_check(result)
 
 
+@whoop_app.command("import-export")
+def whoop_import_export(
+    path: Path = typer.Argument(..., exists=True, readable=True),
+    replace: bool = typer.Option(
+        False,
+        "--replace",
+        help="Clear existing synced WHOOP sleep/recovery/cycle data first.",
+    ),
+    source: str = typer.Option(
+        "whoop_export",
+        "--source",
+        help="Source label for these WHOOP-owned records.",
+    ),
+) -> None:
+    """Import the official WHOOP data export (activities + daily summary).
+
+    PATH can be the export .zip, the unzipped folder, or a single CSV file. This
+    loads workouts (per-activity HR) and the per-cycle recovery/sleep/strain
+    summary, so the readiness report runs offline without the API or ngrok.
+    """
+    _ensure_db()
+    try:
+        with get_session() as session:
+            summary = WhoopExportService(session).import_export(
+                path, source=source, replace=replace
+            )
+    except WhoopExportError as exc:
+        console.print(f"[red]WHOOP export import failed:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    if summary.replaced:
+        console.print("[magenta]Cleared existing WHOOP sleep/recovery/cycle data.[/magenta]")
+    console.print(
+        "[green]WHOOP daily summary imported:[/green] "
+        f"{summary.cycles_saved} cycles, {summary.sleeps_saved} sleeps, "
+        f"{summary.recoveries_saved} recoveries."
+    )
+    console.print(
+        "[green]WHOOP activities imported:[/green] "
+        f"{summary.workouts_saved} activities "
+        f"({summary.activities_with_hr} with heart-rate data)."
+    )
+    console.print(
+        "[dim]Note: WHOOP exports per-activity HR summaries and per-day "
+        "recovery/sleep, not a minute-by-minute timeline.[/dim]"
+    )
+
+
+@whoop_app.command("exam-hr")
+def whoop_exam_hr(
+    exam: str | None = typer.Option(None, "--exam", help="Filter by course name."),
+) -> None:
+    """Show heart rate during each exam window from logged WHOOP activities."""
+    _ensure_db()
+    with get_session() as session:
+        exams = ExamService(session).list()
+        workouts = list_whoop_workouts(session)
+    if exam:
+        needle = exam.casefold()
+        exams = [item for item in exams if needle in item.course.casefold()]
+    if not exams:
+        console.print("[yellow]No matching exams found.[/yellow]")
+        return
+    results = [match_exam_activity(item, workouts) for item in exams]
+    _print_exam_hr(results, has_workouts=bool(workouts))
+
+
 @app.command()
 def export(
     directory: Path = typer.Option(Path("exports"), "--directory", help="Export directory."),
@@ -289,11 +380,16 @@ def export(
 
 @app.command()
 def report(
-    exam: Optional[str] = typer.Option(None, "--exam", help="Filter by course name."),
+    exam: str | None = typer.Option(None, "--exam", help="Filter by course name."),
     compact: bool = typer.Option(
         True,
         "--compact/--classic",
         help="Use the compact dashboard layout or the classic boxed report.",
+    ),
+    full: bool = typer.Option(
+        False,
+        "--full",
+        help="Show per-exam detail, stress drivers, and HR (default is a brief table).",
     ),
 ) -> None:
     """Generate the terminal readiness report."""
@@ -306,6 +402,8 @@ def report(
         sleeps = list_sleeps(session)
         sleep_stream_points = list_sleep_stream_points(session)
         sleep_stream_forbidden = _sleep_stream_forbidden(sync_run, raw_check_run)
+        workouts = list_whoop_workouts(session)
+        raw_hr_points = list_research_raw_hr_points(session)
 
     if not results:
         console.print("[yellow]No imported exams found. Showing demo output.[/yellow]")
@@ -318,6 +416,9 @@ def report(
             sleeps=sleeps,
             sleep_stream_points=sleep_stream_points,
             sleep_stream_forbidden=sleep_stream_forbidden,
+            workouts=workouts,
+            raw_hr_points=raw_hr_points,
+            full=full,
         )
     else:
         _print_report(
@@ -500,17 +601,6 @@ def _recovery_compact_text(recovery: WhoopRecovery | None) -> str:
     return f"{score:<4} {bar}"
 
 
-def _sleep_debt_marker(value: float | int | None) -> str:
-    if value is None:
-        return ""
-    marker = sleep_debt_marker(value)
-    if value < -90:
-        return f"[red]{marker}[/red]"
-    if value < 0:
-        return f"[yellow]{marker}[/yellow]"
-    return f"[green]{marker}[/green]"
-
-
 def _compact_sync_line(sync_run) -> str:
     if sync_run is None:
         return "no sync yet"
@@ -526,33 +616,8 @@ def _compact_sync_line(sync_run) -> str:
     )
 
 
-def _compact_flags(result: ExamReadiness) -> str:
-    if result.readiness_label == "UPCOMING":
-        return "pending night data"
-    stress = _stress_for_result(result)
-    if stress:
-        drivers = top_stress_drivers(stress.components, limit=2)
-        if drivers:
-            return ", ".join(_driver_display_name(driver.name) for driver in drivers)
-    if result.flags:
-        return ", ".join(result.flags)
-    return "no major flags"
-
-
 def _stress_for_result(result: ExamReadiness) -> StressResult | None:
     return compute_exam_stress_index(result)
-
-
-def _stress_level_text(stress: StressResult | None) -> str:
-    if stress is None:
-        return "upcoming"
-    return stress.label
-
-
-def _stress_score_text(stress: StressResult | None) -> str:
-    if stress is None:
-        return "--"
-    return f"{stress.score}"
 
 
 def _driver_display_name(name: str) -> str:
@@ -748,6 +813,84 @@ def _print_whoop_raw_check(result) -> None:
         )
 
 
+_ZONE_COLORS = ("green", "cyan", "yellow", "magenta", "red")
+
+
+def _zone_bar(zone_percent: list[float], width: int = 20) -> str:
+    """Render the HR-zone distribution as a colored stacked bar."""
+    if not zone_percent or sum(zone_percent) <= 0:
+        return "[dim]n/a[/dim]"
+    fill = "█" if _UNICODE else "#"
+    total = sum(zone_percent)
+    segments = []
+    used = 0
+    for index, value in enumerate(zone_percent):
+        cells = int(round((value / total) * width))
+        segments.append(f"[{_ZONE_COLORS[index]}]{fill * cells}[/]")
+        used += cells
+    if used < width:
+        segments.append(fill * (width - used))
+    return "".join(segments)
+
+
+def _print_exam_hr(results: list[ExamActivityHR], *, has_workouts: bool) -> None:
+    _section("EXAM HEART RATE", width=74)
+    console.print("[dim]from logged WHOOP activities overlapping each exam window[/dim]")
+    if not has_workouts:
+        console.print(
+            "\n[yellow]No WHOOP activities imported yet.[/yellow] Import your export:"
+        )
+        console.print(
+            "  exampulse whoop import-export my_whoop_data.zip"
+        )
+        return
+
+    table = Table(box=_TABLE_BOX, header_style="bold", pad_edge=False, expand=False)
+    table.add_column("Exam", no_wrap=True, overflow="ellipsis" if _UNICODE else "crop")
+    table.add_column("Window", no_wrap=True)
+    table.add_column("Avg HR", justify="right", no_wrap=True)
+    table.add_column("Max HR", justify="right", no_wrap=True)
+    table.add_column("Covers", justify="right", no_wrap=True)
+    table.add_column("HR zones (Z1-Z5)", no_wrap=True)
+    for result in results:
+        window = (
+            f"{result.window_start.astimezone():%H:%M}"
+            f"-{result.window_end.astimezone():%H:%M}"
+        )
+        if result.status != "ok":
+            table.add_row(
+                truncate(result.exam.course, 30),
+                window,
+                "[dim]--[/dim]",
+                "[dim]--[/dim]",
+                "[dim]--[/dim]",
+                "[dim]no activity logged[/dim]",
+            )
+            continue
+        coverage = (
+            f"{result.coverage_percent:.0f}%"
+            if result.coverage_percent is not None
+            else "--"
+        )
+        table.add_row(
+            truncate(result.exam.course, 30),
+            window,
+            Text(
+                f"{result.avg_hr:.0f}" if result.avg_hr is not None else "--",
+                style="cyan",
+            ),
+            f"{result.max_hr}" if result.max_hr is not None else "--",
+            Text(coverage, style=value_color(result.coverage_percent, good_high=True)),
+            _zone_bar(result.zone_percent, width=18),
+        )
+    console.print(_ascii_safe_table(table))
+    console.print(
+        "[dim]note[/dim] WHOOP gives a per-activity HR summary (avg/max/zones), "
+        "not a minute-by-minute trace. 'Covers' is how much of the exam window the "
+        "activity spanned."
+    )
+
+
 def _print_not_enough_raw_hr_data() -> None:
     console.print("[yellow]Not enough raw HR data for this exam.[/yellow]")
     console.print("Needed:")
@@ -821,26 +964,44 @@ def _print_compact_report(
     sleeps: list[WhoopSleep] | None = None,
     sleep_stream_points: list | None = None,
     sleep_stream_forbidden: bool = False,
+    workouts: list | None = None,
+    raw_hr_points: list | None = None,
+    full: bool = False,
 ) -> None:
     ranked = sorted(results, key=_risk_order)
     analyzed = [result for result in ranked if result.readiness_label != "UPCOMING"]
     upcoming = [result for result in ranked if result.readiness_label == "UPCOMING"]
     sleeps = sleeps or []
     sleep_stream_points = sleep_stream_points or []
-    night_hr_by_result = {
+    workouts = workouts or []
+    raw_hr_points = raw_hr_points or []
+    activity_hr_by_result = {
+        id(result): match_exam_activity(result.exam, workouts) for result in ranked
+    }
+    raw_hr_by_result = {
         id(result): (
-            NightHRSignal(status="forbidden")
-            if sleep_stream_forbidden
-            else analyze_night_hr_signal(
-                result,
-                sleeps=sleeps,
-                stream_points=sleep_stream_points,
-            )
+            exam_window_hr(result.exam, raw_hr_points) if raw_hr_points else None
+        )
+        for result in ranked
+    }
+    pre_exam_hr_by_result = {
+        id(result): (
+            pre_exam_window_hr(result.exam, raw_hr_points) if raw_hr_points else None
+        )
+        for result in ranked
+    }
+    night_hr_by_result = {
+        id(result): _night_hr_signal(
+            result,
+            sleeps=sleeps,
+            sleep_stream_points=sleep_stream_points,
+            sleep_stream_forbidden=sleep_stream_forbidden,
+            raw_hr_points=raw_hr_points,
         )
         for result in ranked
     }
 
-    _print_report_header(
+    _print_process_header(
         sync_run=sync_run,
         demo_data=demo_data,
         total=len(results),
@@ -849,14 +1010,27 @@ def _print_compact_report(
     )
 
     if analyzed:
-        _print_leaderboard(ranked)
+        _print_exam_stress(analyzed)
+        _print_readiness_chart(analyzed)
+
+    if not full:
+        if upcoming:
+            _print_upcoming_brief(upcoming)
+        _print_footer_note()
+        return
 
     if analyzed:
         _section("EXAM DETAIL", width=74)
         for index, result in enumerate(analyzed):
             if index:
                 console.print()
-            _print_compact_exam_detail(result, night_hr_by_result[id(result)])
+            _print_compact_exam_detail(
+                result,
+                night_hr_by_result[id(result)],
+                activity_hr=activity_hr_by_result[id(result)],
+                raw_hr=raw_hr_by_result[id(result)],
+                pre_exam_hr=pre_exam_hr_by_result[id(result)],
+            )
 
     if ranked:
         _section("STRESS DRIVERS", width=74)
@@ -882,7 +1056,52 @@ def _ascii_safe_table(table: Table) -> Table:
     return table
 
 
-def _print_report_header(
+def _night_hr_signal(
+    result: ExamReadiness,
+    *,
+    sleeps: list,
+    sleep_stream_points: list,
+    sleep_stream_forbidden: bool,
+    raw_hr_points: list,
+) -> NightHRSignal:
+    """Night-before sleep HR: official WHOOP stream, else imported raw HR."""
+    signal: NightHRSignal | None = None
+    if not sleep_stream_forbidden:
+        signal = analyze_night_hr_signal(
+            result, sleeps=sleeps, stream_points=sleep_stream_points
+        )
+    # The official stream is blocked (403) or empty for most accounts; fall back
+    # to user-imported per-minute HR covering the night-before sleep window.
+    if raw_hr_points and (
+        signal is None or signal.status in {"missing_stream", "forbidden"}
+    ):
+        raw_signal = analyze_night_hr_from_raw(
+            result, sleeps=sleeps, points=raw_hr_points
+        )
+        if raw_signal.status == "ok":
+            return raw_signal
+    if signal is not None:
+        return signal
+    return NightHRSignal(status="forbidden" if sleep_stream_forbidden else "missing_stream")
+
+
+def _section_sub(title: str, subtitle: str, width: int = 78) -> None:
+    console.print()
+    console.print(Text.assemble((title, "bold cyan"), ("   " + subtitle, "dim")))
+    console.print(f"[dim]{horizontal_rule(width)}[/dim]")
+
+
+def _awake_color(hours: float | None) -> str:
+    if hours is None:
+        return "dim"
+    if hours >= 18:
+        return "red"
+    if hours >= 13:
+        return "yellow"
+    return "green"
+
+
+def _print_process_header(
     *,
     sync_run,
     demo_data: bool,
@@ -890,95 +1109,117 @@ def _print_report_header(
     analyzed_n: int,
     upcoming_n: int,
 ) -> None:
-    title = Text()
-    title.append("EXAMPULSE", style="bold cyan")
-    title.append(f"  {_DOT}  Exam Readiness", style="bold")
+    def line(tag: str, body: str) -> None:
+        console.print(Text.assemble((tag, "bold cyan"), (" " + body, "dim")))
+
     if demo_data:
-        title.append("    DEMO DATA", style="bold magenta")
-    console.print(
-        Panel(title, box=_BANNER_BOX, border_style="cyan", padding=(0, 1))
+        console.print(Text("[ DEMO DATA ]", style="bold magenta"))
+    line("[whoop]", _compact_sync_line(sync_run))
+    label = "demo scoring" if demo_data else "scoring"
+    line(
+        "[exams]",
+        f"exams.json -> {total} exams, {analyzed_n} analyzed, {upcoming_n} upcoming",
     )
-    console.print(
-        Text.assemble(("whoop  ", "bold cyan"), (_compact_sync_line(sync_run), "dim"))
-    )
-    console.print(
-        Text.assemble(
-            ("exams  ", "bold cyan"),
-            (
-                f"{total} total {_DOT} {analyzed_n} analyzed {_DOT} {upcoming_n} upcoming",
-                "dim",
-            ),
-        )
-    )
-    method = "demo scoring" if demo_data else "scoring"
-    sigma = "σ" if _UNICODE else "sd"
-    console.print(
-        Text.assemble(
-            ("method ", "bold cyan"),
-            (
-                f"{method} vs 14-day baseline {_DOT} mean {_PLUSMINUS} {sigma}, "
-                "z-scores, percentiles",
-                "dim",
-            ),
-        )
-    )
+    line("[run]  ", f"{label} each exam vs 14-day personal baseline ...")
+    line("[run]  ", "estimating night-before physiological load ...")
 
 
-def _print_leaderboard(ranked: list[ExamReadiness]) -> None:
-    _section("EXAM LEADERBOARD", width=74)
-    console.print("[dim]night-before physiology vs personal baseline[/dim]")
-    table = Table(
-        box=_TABLE_BOX,
-        header_style="bold",
-        pad_edge=False,
-        expand=False,
+def _print_exam_stress(ranked: list[ExamReadiness]) -> None:
+    _section_sub("EXAM STRESS", "night-before physiological load vs 14-day baseline")
+    console.print(
+        f"[dim]{'load':>5}  {'awake':>5}  {'sleep':>7}  {'rec':>4}  {'hrv':>5}  "
+        f"{'':<10}  exam[/dim]"
     )
-    overflow = "ellipsis" if _UNICODE else "crop"
-    table.add_column("Load", justify="right", no_wrap=True)
-    table.add_column("State", no_wrap=True)
-    table.add_column("Ready", no_wrap=True)
-    table.add_column("Sleep", justify="right", no_wrap=True)
-    table.add_column("Rec", justify="right", no_wrap=True)
-    table.add_column("Exam", no_wrap=True, overflow=overflow)
-    table.add_column("Top drivers", no_wrap=True, overflow=overflow)
-    for result in ranked:
-        table.add_row(*_leaderboard_cells(result))
-    console.print(_ascii_safe_table(table))
+
+    def load_key(result: ExamReadiness) -> float:
+        stress = _stress_for_result(result)
+        return -(stress.score if stress else -1)
+
+    for result in sorted(ranked, key=load_key):
+        console.print(_exam_stress_row(result))
 
 
-def _leaderboard_cells(result: ExamReadiness) -> list:
+def _exam_stress_row(result: ExamReadiness) -> str:
     upcoming = result.readiness_label == "UPCOMING"
     stress = _stress_for_result(result)
-    stress_label = _stress_level_text(stress)
-    stress_style = _stress_color(stress_label)
-    load = _stress_score_text(stress)
+    load = stress.score if stress else None
+    load_col = value_color(load, good_high=False) if load is not None else "dim"
+    load_num = "--" if load is None else str(load)
+    bar = make_bar(load, max_value=100, width=10) if load is not None else " " * 10
 
-    recovery_score = result.recovery.recovery_score if result.recovery else None
-    sleep_delta = (
-        "--" if upcoming else compact_duration(result.sleep_debt_minutes, signed=True)
+    awake = result.awake_hours_before
+    awake_cell = f"{awake:.0f}h" if awake is not None else "--"
+    rec = result.recovery.recovery_score if result.recovery else None
+    sleep_cell = "--" if upcoming else compact_duration(result.sleep_debt_minutes, signed=True)
+    rec_cell = "--" if upcoming else format_percent(rec)
+    hrv_cell = "--" if upcoming else format_percent_delta(result.hrv_delta_percent)
+
+    return (
+        f"[{load_col}]{load_num:>5}[/]  "
+        f"[{_awake_color(awake)}]{awake_cell:>5}[/]  "
+        f"[{_sleep_delta_color(result.sleep_debt_minutes)}]{sleep_cell:>7}[/]  "
+        f"[{value_color(rec)}]{rec_cell:>4}[/]  "
+        f"[{_delta_color(result.hrv_delta_percent, good_high=True)}]{hrv_cell:>5}[/]  "
+        f"[{load_col}]{bar}[/]  "
+        f"{escape(truncate(result.exam.course, 34))}"
     )
-    drivers = "pending" if upcoming else _compact_flags(result)
-
-    return [
-        Text(load, style=stress_style),
-        Text(stress_label, style=stress_style),
-        Text(_short_readiness(result), style=status_color(result.readiness_label)),
-        Text(sleep_delta, style=_sleep_delta_color(result.sleep_debt_minutes)),
-        Text(
-            "--" if upcoming else format_percent(recovery_score),
-            style="dim" if upcoming else value_color(recovery_score),
-        ),
-        truncate(result.exam.course, 26),
-        Text(truncate(drivers, 24), style="dim"),
-    ]
 
 
-def _short_readiness(result: ExamReadiness) -> str:
-    if result.readiness_label == "UPCOMING":
-        return "upcoming"
-    if result.readiness_score is None:
-        return result.readiness_label.casefold()
-    return f"{result.readiness_label.casefold()} {result.readiness_score:.0f}"
+def _print_readiness_chart(analyzed: list[ExamReadiness]) -> None:
+    _section_sub("READINESS", "0-100, diverging from the 50 midpoint")
+    half = 18
+    fill = "█" if _UNICODE else "#"
+    axis = "│" if _UNICODE else "|"
+    left = "low".ljust(half)
+    right = "ready".rjust(half)
+    console.print(f"[dim]{'exam':<26} {'score':>5}   {left}{axis}{right}[/dim]")
+    for result in sorted(analyzed, key=lambda item: -(item.readiness_score or 0)):
+        score = result.readiness_score or 0
+        magnitude = max(0, min(int(round(abs(score - 50) / 50 * half)), half))
+        if score >= 50:
+            chart = " " * half + axis + f"[green]{fill * magnitude}[/green]"
+        else:
+            chart = " " * (half - magnitude) + f"[red]{fill * magnitude}[/red]" + axis
+        console.print(
+            f"{escape(truncate(result.exam.course, 26)):<26} "
+            f"[{status_color(result.readiness_label)}]{score:>5.0f}[/]   {chart}"
+        )
+
+
+def _print_upcoming_brief(upcoming: list[ExamReadiness]) -> None:
+    _section_sub("UPCOMING", "analysis unlocks after the exam + night-before data")
+    now = utc_now()
+    for result in upcoming:
+        console.print(
+            Text.assemble(
+                (truncate(result.exam.course, 34), "cyan"),
+                (
+                    f"   {format_compact_datetime(result.exam.exam_at)}"
+                    f"  {_DOT}  in {_remaining_text(result.exam.exam_at, now)}",
+                    "dim",
+                ),
+            )
+        )
+
+
+def _print_footer_note() -> None:
+    console.print()
+    console.print(
+        Text.assemble(
+            ("report --full", "cyan"),
+            (f"  for per-exam detail, drivers & HR  {_DOT}  ", "dim"),
+            ("exampulse export", "cyan"),
+            ("  writes CSVs", "dim"),
+        )
+    )
+
+
+def _delta_color(value: float | None, *, good_high: bool) -> str:
+    if value is None:
+        return "dim"
+    if good_high:
+        return "green" if value >= 0 else ("yellow" if value > -15 else "red")
+    return "green" if value <= 0 else ("yellow" if value < 5 else "red")
 
 
 def _sleep_delta_color(value: float | int | None) -> str:
@@ -1001,7 +1242,13 @@ def _zscore_cell(value: float | None) -> str:
     return f"[{zscore_color(value)}]{format_zscore(value)}[/]"
 
 
-def _print_compact_exam_detail(result: ExamReadiness, night_hr: NightHRSignal | None = None) -> None:
+def _print_compact_exam_detail(
+    result: ExamReadiness,
+    night_hr: NightHRSignal | None = None,
+    activity_hr: ExamActivityHR | None = None,
+    raw_hr: ExamRawHR | None = None,
+    pre_exam_hr: PreExamHR | None = None,
+) -> None:
     label = result.readiness_label.casefold()
     score = "--" if result.readiness_score is None else f"{result.readiness_score:.0f}"
     stress = _stress_for_result(result)
@@ -1069,6 +1316,8 @@ def _print_compact_exam_detail(result: ExamReadiness, night_hr: NightHRSignal | 
     table.add_row("strain", format_float(strain), "[dim]prev cycle[/dim]", "", "", "")
     console.print(_ascii_safe_table(table))
 
+    _print_awake_line(result)
+    _print_night_arousal_line(result)
     console.print(
         f"[dim]{'score':<10}[/dim] "
         f"[{status_color(result.readiness_label)}]ready {label} {score:<3} "
@@ -1077,7 +1326,144 @@ def _print_compact_exam_detail(result: ExamReadiness, night_hr: NightHRSignal | 
         f"[{load_color}]{stress_bar(stress.score if stress else None, width=12)}[/]"
     )
     console.print(f"[dim]{'note':<10}[/dim] {escape(result.summary)}")
+    _print_pre_exam_hr_line(pre_exam_hr)
+    _print_exam_raw_hr_line(raw_hr)
+    _print_exam_hr_line(activity_hr)
     _print_night_hr_signal(night_hr)
+
+
+def _awake_verdict(hours: float | None) -> tuple[str, str]:
+    dash = "—" if _UNICODE else "-"
+    if hours is None:
+        return "unknown", "dim"
+    if hours >= 24:
+        return f"{hours:.0f}h awake {dash} 24h+ no sleep", "red"
+    if hours >= 18:
+        return f"{hours:.0f}h awake {dash} all-nighter (no night sleep)", "red"
+    if hours >= 13:
+        return f"{hours:.0f}h awake {dash} long awake stretch", "yellow"
+    return f"{hours:.0f}h awake {dash} rested", "green"
+
+
+def _print_awake_line(result: ExamReadiness) -> None:
+    if result.awake_hours_before is None:
+        return
+    verdict, style = _awake_verdict(result.awake_hours_before)
+    note = ""
+    if result.awake_hours_before >= 18:
+        note = (
+            "   [dim](no sleep the night before; the 'sleep' above is your last "
+            "sleep, hours earlier)[/dim]"
+        )
+    console.print(f"[dim]{'awake':<10}[/dim] [{style}]{verdict}[/{style}]{note}")
+
+
+def _print_pre_exam_hr_line(pre_exam_hr: PreExamHR | None) -> None:
+    if pre_exam_hr is None:
+        return
+    if pre_exam_hr.status != "ok":
+        console.print(
+            f"[dim]{'pre-exam':<10}[/dim] "
+            f"[dim]no per-minute HR in the {pre_exam_hr.hours_before:.0f}h before exam[/dim]"
+        )
+        return
+    console.print(
+        f"[dim]{'pre-exam':<10}[/dim] "
+        f"[cyan]{pre_exam_hr.avg_hr:.0f} avg[/cyan] "
+        f"[dim]({pre_exam_hr.min_hr}-{pre_exam_hr.max_hr} bpm, "
+        f"{pre_exam_hr.hours_before:.0f}h before, {pre_exam_hr.points} pts)[/dim]"
+    )
+    console.print(
+        f"[dim]{'':<10}[/dim] [cyan]{sparkline(_downsample(pre_exam_hr.minute_series))}[/cyan]"
+    )
+
+
+def _downsample(series: list[float], target: int = 40) -> list[float]:
+    """Average a long series down to at most ``target`` points for a sparkline."""
+    if len(series) <= target:
+        return series
+    bucket = math.ceil(len(series) / target)
+    return [
+        sum(series[index : index + bucket]) / len(series[index : index + bucket])
+        for index in range(0, len(series), bucket)
+    ]
+
+
+def _night_arousal(result: ExamReadiness) -> tuple[str, str]:
+    """Combine night-before RHR + HRV into one arousal verdict.
+
+    Elevated resting HR plus suppressed HRV the night before is the classic
+    physiological signature of pre-exam stress / poor recovery.
+    """
+    hrv = result.hrv_delta_percent
+    rhr = result.rhr_delta_bpm
+    if hrv is None and rhr is None:
+        return "no HRV/RHR data", "dim"
+    high = (hrv is not None and hrv <= -15) or (rhr is not None and rhr >= 5)
+    mild = (hrv is not None and hrv <= -8) or (rhr is not None and rhr >= 3)
+    if high:
+        return "elevated arousal (stress signal)", "red"
+    if mild:
+        return "mild arousal", "yellow"
+    return "calm", "green"
+
+
+def _print_night_arousal_line(result: ExamReadiness) -> None:
+    verdict, style = _night_arousal(result)
+    rhr_text = format_bpm_delta(result.rhr_delta_bpm)
+    hrv_text = format_percent_delta(result.hrv_delta_percent)
+    arrow = "->" if not _UNICODE else "→"
+    console.print(
+        f"[dim]{'night':<10}[/dim] "
+        f"RHR {rhr_text} {_DOT} HRV {hrv_text}  {arrow}  [{style}]{verdict}[/{style}]"
+    )
+
+
+def _print_exam_raw_hr_line(raw_hr: ExamRawHR | None) -> None:
+    if raw_hr is None:
+        return
+    sep = _DOT
+    if raw_hr.status != "ok":
+        console.print(
+            f"[dim]{'hr/min':<10}[/dim] [dim]no per-minute HR in exam window[/dim]"
+        )
+        return
+    dbpm_style = "red" if (raw_hr.dbpm or 0) >= 5 else (
+        "yellow" if (raw_hr.dbpm or 0) > 0 else "green"
+    )
+    z_text = f"z {raw_hr.z:+.1f}" if raw_hr.z is not None else "z n/a"
+    console.print(
+        f"[dim]{'hr/min':<10}[/dim] "
+        f"[cyan]{raw_hr.avg_exam:.0f} avg[/cyan]   "
+        f"[{dbpm_style}]{raw_hr.dbpm:+.0f} vs baseline[/{dbpm_style}]   "
+        f"[dim]{z_text} {sep} {raw_hr.elevated_percent:.0f}% elevated {sep} "
+        f"{raw_hr.exam_points} pts[/dim]"
+    )
+    console.print(
+        f"[dim]{'':<10}[/dim] [cyan]{sparkline(_downsample(raw_hr.minute_series))}[/cyan]"
+    )
+
+
+def _print_exam_hr_line(activity_hr: ExamActivityHR | None) -> None:
+    if activity_hr is None:
+        return
+    if activity_hr.status != "ok":
+        console.print(
+            f"[dim]{'exam hr':<10}[/dim] [dim]no WHOOP activity logged in window[/dim]"
+        )
+        return
+    avg = f"{activity_hr.avg_hr:.0f}" if activity_hr.avg_hr is not None else "--"
+    coverage = (
+        f"{activity_hr.coverage_percent:.0f}%"
+        if activity_hr.coverage_percent is not None
+        else "--"
+    )
+    console.print(
+        f"[dim]{'exam hr':<10}[/dim] "
+        f"[cyan]{avg} avg[/cyan] / {activity_hr.max_hr} max bpm   "
+        f"[dim]covers {coverage} of window[/dim]   "
+        f"{_zone_bar(activity_hr.zone_percent, width=12)}"
+    )
 
 
 def _percentile_text(value: float | None) -> str:
@@ -1090,11 +1476,7 @@ def _percentile_text(value: float | None) -> str:
 def _delta_text(value: float | None, unit: str, *, good_high: bool) -> Text:
     if value is None:
         return Text("n/a", style="dim")
-    if good_high:
-        style = "green" if value >= 0 else ("yellow" if value > -15 else "red")
-    else:
-        style = "green" if value <= 0 else ("yellow" if value < 5 else "red")
-    return Text(f"{value:+.0f}{unit}", style=style)
+    return Text(f"{value:+.0f}{unit}", style=_delta_color(value, good_high=good_high))
 
 
 def _print_night_hr_signal(signal: NightHRSignal | None) -> None:
@@ -1123,6 +1505,12 @@ def _print_night_hr_signal(signal: NightHRSignal | None) -> None:
         baseline = f"{signal.baseline_hr:.0f} bpm"
         if signal.delta_bpm is not None:
             delta = f"    {signal.delta_bpm:+.0f} vs sleep baseline"
+    source = (
+        "imported per-minute HR"
+        if signal.source == "imported_raw"
+        else "official WHOOP sleep stream"
+    )
+    console.print(f"[dim]{'source':<10}[/dim] {source}")
     console.print(f"[dim]{'points':<10}[/dim] {signal.points}")
     console.print(f"[dim]{'avg hr':<10}[/dim] {signal.avg_hr:.0f} bpm{delta}")
     console.print(f"[dim]{'max hr':<10}[/dim] {signal.max_hr:.0f} bpm")

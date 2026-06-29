@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from statistics import mean
 
@@ -20,6 +20,7 @@ class NightHRSignal:
     elevated_percent: float | None = None
     spike_count: int | None = None
     confidence: str = "low"
+    source: str = "whoop_stream"
 
 
 def analyze_night_hr_signal(
@@ -56,6 +57,75 @@ def analyze_night_hr_signal(
         baseline_hr=baseline_hr,
         confidence=confidence,
     )
+
+
+def analyze_night_hr_from_raw(
+    result: ExamReadiness,
+    *,
+    sleeps: list[WhoopSleep],
+    points: list,
+) -> NightHRSignal:
+    """Night-before sleep HR from imported per-minute points (timestamp + hr).
+
+    Unlike the official Sleep Stream (matched by ``sleep_id``), imported points
+    have no sleep id, so they are matched to the night-before sleep by *time
+    window*. Baseline is the same window across prior nights.
+    """
+    if result.readiness_label == "UPCOMING":
+        return NightHRSignal(status="pending")
+    if result.sleep is None:
+        return NightHRSignal(status="missing_sleep")
+
+    current_points = _points_in_window(points, result.sleep.start, result.sleep.end)
+    if not current_points:
+        return NightHRSignal(status="missing_stream")
+
+    baseline_points = _baseline_points_by_time(
+        result=result, sleeps=sleeps, points=points
+    )
+    baseline_hr = (
+        mean(point.hr for point in baseline_points) if baseline_points else None
+    )
+    confidence = "high" if len(baseline_points) >= 180 else "low"
+    signal = _signal_from_points(
+        current_points=current_points,
+        baseline_hr=baseline_hr,
+        confidence=confidence,
+    )
+    return replace(signal, source="imported_raw")
+
+
+def _points_in_window(points: list, start, end) -> list:
+    window_start = to_utc(start)
+    window_end = to_utc(end)
+    return [
+        point
+        for point in points
+        if window_start <= to_utc(point.timestamp) <= window_end
+    ]
+
+
+def _baseline_points_by_time(
+    *,
+    result: ExamReadiness,
+    sleeps: list[WhoopSleep],
+    points: list,
+) -> list:
+    if result.sleep is None:
+        return []
+    exam_at = to_utc(result.exam.exam_at)
+    current_start = to_utc(result.sleep.start)
+    window_start = exam_at - timedelta(days=14)
+    collected: list = []
+    for sleep in sleeps:
+        if (
+            sleep.id != result.sleep.id
+            and sleep.score_state == "SCORED"
+            and not sleep.nap
+            and window_start <= to_utc(sleep.end) < current_start
+        ):
+            collected.extend(_points_in_window(points, sleep.start, sleep.end))
+    return collected
 
 
 def _sleeping_points_for_sleep(
