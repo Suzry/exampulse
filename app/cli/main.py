@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import time
 from datetime import UTC, datetime, timedelta
@@ -214,11 +215,34 @@ def import_exams(
 
 
 @exams_app.command("list")
-def list_exam_command() -> None:
+def list_exam_command(
+    json_output: bool = typer.Option(
+        False, "--json", help="Print machine-readable JSON instead of the table."
+    ),
+) -> None:
     """List imported exams."""
     _ensure_db()
     with get_session() as session:
         exams = ExamService(session).list()
+    if json_output:
+        # Plain print, not console.print: Rich soft-wraps long lines at
+        # terminal width, which would inject newlines into the JSON.
+        print(
+            json.dumps(
+                [
+                    {
+                        "course": exam.course,
+                        "exam_at": exam.exam_at.isoformat(),
+                        "grade": exam.grade,
+                        "letter_grade": exam.letter_grade,
+                        "notes": exam.notes,
+                    }
+                    for exam in exams
+                ],
+                indent=2,
+            )
+        )
+        return
     if not exams:
         console.print("No exams imported yet. Try: exampulse exams import exams.json")
         return
@@ -391,6 +415,11 @@ def report(
         "--full",
         help="Show per-exam detail, stress drivers, and HR (default is a brief table).",
     ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Print machine-readable JSON (one object per exam) instead of the dashboard.",
+    ),
 ) -> None:
     """Generate the terminal readiness report."""
     _ensure_db()
@@ -406,8 +435,12 @@ def report(
         raw_hr_points = list_research_raw_hr_points(session)
 
     if not results:
-        console.print("[yellow]No imported exams found. Showing demo output.[/yellow]")
+        if not json_output:
+            console.print("[yellow]No imported exams found. Showing demo output.[/yellow]")
         results = [_demo_result()]
+    if json_output:
+        _print_report_json(results)
+        return
     if compact:
         _print_compact_report(
             results,
@@ -957,6 +990,35 @@ def _percent_text(value: float | None) -> str:
     if value is None:
         return "n/a"
     return f"{value:.0f}%"
+
+
+def _result_to_json(result: ExamReadiness) -> dict:
+    stress = _stress_for_result(result) if result.readiness_label != "UPCOMING" else None
+    return {
+        "course": result.exam.course,
+        "exam_at": result.exam.exam_at.isoformat(),
+        "status": "upcoming" if result.readiness_label == "UPCOMING" else "analyzed",
+        "readiness_score": result.readiness_score,
+        "readiness_label": result.readiness_label,
+        "physiological_load": (
+            {"score": stress.score, "label": stress.label} if stress is not None else None
+        ),
+        "grade": result.exam.grade,
+        "letter_grade": result.exam.letter_grade,
+        "baseline_nights": result.baseline_nights,
+        "sleep_debt_minutes": result.sleep_debt_minutes,
+        "recovery_delta": result.recovery_delta,
+        "hrv_delta_percent": result.hrv_delta_percent,
+        "rhr_delta_bpm": result.rhr_delta_bpm,
+        "summary": result.summary,
+    }
+
+
+def _print_report_json(results: list[ExamReadiness]) -> None:
+    ranked = sorted(results, key=_risk_order)
+    # Plain print, not console.print: Rich soft-wraps long lines at terminal
+    # width, which would inject newlines into the JSON and break parsing.
+    print(json.dumps([_result_to_json(result) for result in ranked], indent=2))
 
 
 def _print_compact_report(

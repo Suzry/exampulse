@@ -106,12 +106,17 @@ exampulse whoop import-export my_whoop_data.zip
 exampulse whoop exam-hr
 exampulse exams import exams.json
 exampulse exams list
+exampulse exams list --json
 exampulse today --compact
 exampulse report
 exampulse report --classic
+exampulse report --json
 exampulse export
 exampulse watch --every 30
 ```
+
+`--json` on `report` and `exams list` prints machine-readable JSON to stdout
+instead of the terminal dashboard, for scripting or feeding into another tool.
 
 ## Reading the report
 

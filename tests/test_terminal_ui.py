@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 
 from rich.console import Console
@@ -211,6 +212,37 @@ def test_full_report_omits_result_line_without_grade(monkeypatch) -> None:
     output = test_console.export_text()
 
     assert "result" not in output.casefold()
+
+
+def test_result_to_json_includes_grade_and_load() -> None:
+    result = _analyzed_result()
+    result.exam.grade = 92
+    result.exam.letter_grade = "A"
+    payload = cli_main._result_to_json(result)
+
+    assert payload["course"] == "Differential equations and Linear Algebra"
+    assert payload["status"] == "analyzed"
+    assert payload["grade"] == 92
+    assert payload["letter_grade"] == "A"
+    assert payload["physiological_load"] is not None
+
+
+def test_result_to_json_marks_upcoming_without_load() -> None:
+    payload = cli_main._result_to_json(_upcoming_result())
+
+    assert payload["status"] == "upcoming"
+    assert payload["physiological_load"] is None
+    assert payload["grade"] is None
+
+
+def test_print_report_json_emits_parseable_json_with_long_summaries(capsys) -> None:
+    # A long summary line is exactly what triggers Rich's soft-wrap corruption
+    # if _print_report_json ever goes back to console.print() for this path.
+    cli_main._print_report_json([_analyzed_result(), _upcoming_result()])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert len(payload) == 2
+    assert {item["status"] for item in payload} == {"analyzed", "upcoming"}
 
 
 def test_upcoming_exams_do_not_fake_sleep_hr_values(monkeypatch) -> None:
