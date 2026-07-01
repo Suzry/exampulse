@@ -49,12 +49,16 @@ class ExamService:
         grade = item.get("grade")
         if grade is not None:
             grade = float(grade)
+        letter_grade = item.get("letter_grade")
+        if letter_grade is not None:
+            letter_grade = str(letter_grade).strip() or None
         notes = str(item.get("notes") or "")
         return upsert_exam(
             self.session,
             course=course,
             exam_at=exam_at,
             grade=grade,
+            letter_grade=letter_grade,
             notes=notes,
         )
 

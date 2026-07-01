@@ -728,12 +728,14 @@ def _print_exams_table(exams: list[Exam]) -> None:
     table.add_column("Course")
     table.add_column("Exam time")
     table.add_column("Grade")
+    table.add_column("Letter")
     table.add_column("Notes")
     for exam in exams:
         table.add_row(
             exam.course,
             exam.exam_at.isoformat(),
             "n/a" if exam.grade is None else f"{exam.grade:g}",
+            exam.letter_grade or "n/a",
             exam.notes,
         )
     console.print(_ascii_safe_table(table))

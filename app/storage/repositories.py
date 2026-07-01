@@ -226,15 +226,23 @@ def upsert_exam(
     course: str,
     exam_at,
     grade: float | None = None,
+    letter_grade: str | None = None,
     notes: str = "",
 ) -> Exam:
     existing = session.exec(
         select(Exam).where(Exam.course == course, Exam.exam_at == exam_at)
     ).first()
     if existing is None:
-        existing = Exam(course=course, exam_at=exam_at, grade=grade, notes=notes or "")
+        existing = Exam(
+            course=course,
+            exam_at=exam_at,
+            grade=grade,
+            letter_grade=letter_grade,
+            notes=notes or "",
+        )
     else:
         existing.grade = grade
+        existing.letter_grade = letter_grade
         existing.notes = notes or ""
         existing.updated_at = utc_now()
     session.add(existing)

@@ -75,13 +75,16 @@ your real schedule never leaves your machine). Create one shaped like this:
     "course": "Operating Systems",
     "exam_at": "2026-06-22T10:15:00+03:00",
     "grade": null,
+    "letter_grade": null,
     "notes": "Code: CS2016; Room: 12-0.003"
   }
 ]
 ```
 
-`exam_at` is an ISO-8601 timestamp with your local UTC offset. `grade` and
-`notes` are optional. Then import it:
+`exam_at` is an ISO-8601 timestamp with your local UTC offset. `grade`,
+`letter_grade`, and `notes` are optional. Re-importing the same `course` +
+`exam_at` updates that exam in place (e.g. to fill in a grade once the
+result is out). Then import it:
 
 ```bash
 exampulse exams import exams.json

@@ -160,6 +160,7 @@ class Exam(SQLModel, table=True):
     course: str = Field(index=True)
     exam_at: datetime = Field(sa_column=datetime_column(index=True))
     grade: float | None = None
+    letter_grade: str | None = None
     notes: str = ""
     created_at: datetime = Field(default_factory=utc_now, sa_column=datetime_column())
     updated_at: datetime = Field(default_factory=utc_now, sa_column=datetime_column())
