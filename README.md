@@ -1,5 +1,10 @@
 # Exampulse
 
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
+[![Tests: pytest](https://img.shields.io/badge/tests-pytest-0A9EDC)](https://docs.pytest.org/)
+[![Lint: ruff](https://img.shields.io/badge/lint-ruff-D7FF64)](https://docs.astral.sh/ruff/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 CLI-first WHOOP exam readiness analyzer. It syncs official WHOOP sleep, recovery,
 and cycle data into SQLite, imports your exam schedule, then produces a terminal
 report that compares the night before each exam against your baseline.
