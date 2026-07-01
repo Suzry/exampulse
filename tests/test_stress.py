@@ -63,7 +63,7 @@ def test_low_load_stress_case() -> None:
 
     assert stress is not None
     assert stress.score == 0
-    assert stress.label == "calm"
+    assert stress.label == "low stress"
 
 
 def test_high_load_stress_case_is_capped_at_100() -> None:
@@ -79,7 +79,7 @@ def test_high_load_stress_case_is_capped_at_100() -> None:
 
     assert stress is not None
     assert stress.score == 100
-    assert classify_stress(stress.score) == "high load"
+    assert classify_stress(stress.score) == "high stress"
 
 
 def test_future_exam_does_not_compute_stress() -> None:

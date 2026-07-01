@@ -79,7 +79,7 @@ def _analyzed_result() -> ExamReadiness:
         readiness_score=66,
         readiness_label="MODERATE",
         flags=[],
-        summary="No major physiological load indicators stood out.",
+        summary="No major physiological stress indicators stood out.",
     )
 
 
@@ -214,7 +214,7 @@ def test_full_report_omits_result_line_without_grade(monkeypatch) -> None:
     assert "result" not in output.casefold()
 
 
-def test_result_to_json_includes_grade_and_load() -> None:
+def test_result_to_json_includes_grade_and_stress() -> None:
     result = _analyzed_result()
     result.exam.grade = 92
     result.exam.letter_grade = "A"
@@ -224,14 +224,14 @@ def test_result_to_json_includes_grade_and_load() -> None:
     assert payload["status"] == "analyzed"
     assert payload["grade"] == 92
     assert payload["letter_grade"] == "A"
-    assert payload["physiological_load"] is not None
+    assert payload["physiological_stress"] is not None
 
 
-def test_result_to_json_marks_upcoming_without_load() -> None:
+def test_result_to_json_marks_upcoming_without_stress() -> None:
     payload = cli_main._result_to_json(_upcoming_result())
 
     assert payload["status"] == "upcoming"
-    assert payload["physiological_load"] is None
+    assert payload["physiological_stress"] is None
     assert payload["grade"] is None
 
 

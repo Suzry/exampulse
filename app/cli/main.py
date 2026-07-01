@@ -1000,7 +1000,7 @@ def _result_to_json(result: ExamReadiness) -> dict:
         "status": "upcoming" if result.readiness_label == "UPCOMING" else "analyzed",
         "readiness_score": result.readiness_score,
         "readiness_label": result.readiness_label,
-        "physiological_load": (
+        "physiological_stress": (
             {"score": stress.score, "label": stress.label} if stress is not None else None
         ),
         "grade": result.exam.grade,
@@ -1185,13 +1185,13 @@ def _print_process_header(
         f"exams.json -> {total} exams, {analyzed_n} analyzed, {upcoming_n} upcoming",
     )
     line("[run]  ", f"{label} each exam vs 14-day personal baseline ...")
-    line("[run]  ", "estimating night-before physiological load ...")
+    line("[run]  ", "estimating night-before physiological stress ...")
 
 
 def _print_exam_stress(ranked: list[ExamReadiness]) -> None:
-    _section_sub("EXAM STRESS", "night-before physiological load vs 14-day baseline")
+    _section_sub("EXAM STRESS", "night-before physiological stress vs 14-day baseline")
     console.print(
-        f"[dim]{'load':>5}  {'awake':>5}  {'sleep':>7}  {'rec':>4}  {'hrv':>5}  "
+        f"[dim]{'stress':>6}  {'awake':>5}  {'sleep':>7}  {'rec':>4}  {'hrv':>5}  "
         f"{'':<10}  exam[/dim]"
     )
 
@@ -1219,7 +1219,7 @@ def _exam_stress_row(result: ExamReadiness) -> str:
     hrv_cell = "--" if upcoming else format_percent_delta(result.hrv_delta_percent)
 
     return (
-        f"[{load_col}]{load_num:>5}[/]  "
+        f"[{load_col}]{load_num:>6}[/]  "
         f"[{_awake_color(awake)}]{awake_cell:>5}[/]  "
         f"[{_sleep_delta_color(result.sleep_debt_minutes)}]{sleep_cell:>7}[/]  "
         f"[{value_color(rec)}]{rec_cell:>4}[/]  "
@@ -1601,13 +1601,13 @@ def _print_night_hr_signal(signal: NightHRSignal | None) -> None:
 
 def _stress_color(label: str) -> str:
     normalized = label.casefold()
-    if normalized == "calm":
+    if normalized == "low stress":
         return "green"
-    if normalized == "mild load":
+    if normalized == "mild stress":
         return "yellow"
-    if normalized == "elevated":
+    if normalized == "elevated stress":
         return "yellow"
-    if normalized == "high load":
+    if normalized == "high stress":
         return "red"
     return "dim"
 
@@ -1632,7 +1632,7 @@ def _print_compact_stress_monitor(result: ExamReadiness) -> None:
     previous_strain = result.previous_cycle.strain if result.previous_cycle else None
 
     console.print(
-        f"[dim]{'load':<10}[/dim] "
+        f"[dim]{'stress':<10}[/dim] "
         f"[{color}]{stress.label} {stress.score}/100[/]    "
         f"[{color}]{stress_bar(stress.score)}[/]"
     )
@@ -1664,10 +1664,11 @@ def _print_compact_stress_monitor(result: ExamReadiness) -> None:
         for driver in drivers:
             console.print(f"- {driver.name}: {driver.points}/{driver.max_points}")
     else:
-        console.print("- no major physiological load drivers")
+        console.print("- no major stress drivers")
     console.print(
-        f"\n[dim]{'note':<10}[/dim] This is a physiological load estimate, "
-        "not a mental stress diagnosis."
+        f"\n[dim]{'note':<10}[/dim] This is a physiological stress estimate from "
+        "sleep, recovery, HRV, RHR, and strain — a proxy, not a direct "
+        "measurement of mental stress."
     )
 
 
@@ -1704,17 +1705,17 @@ def _print_compact_stress_drivers(result: ExamReadiness) -> None:
             f"{_driver_display_name(driver.name)} (+{driver.points})"
         )
         console.print(
-            f"[dim]{'load bar':<10}[/dim] "
+            f"[dim]{'stress bar':<10}[/dim] "
             f"[{_stress_color(stress.label)}]{stress_bar(stress.score, width=16)}[/]"
         )
     else:
-        console.print("[dim]top driver [/dim] no major physiological load driver")
+        console.print("[dim]top driver [/dim] no major stress driver")
     console.print(
-        f"[dim]{'note':<10}[/dim] Physiological Load Index estimates body load "
+        f"[dim]{'note':<10}[/dim] Physiological Stress Index estimates body stress "
         "from sleep, recovery, HRV, RHR, and strain."
     )
     console.print(
-        f"{'':<10} It is not a mental stress diagnosis."
+        f"{'':<10} It is a proxy, not a direct measurement of mental stress."
     )
 
 

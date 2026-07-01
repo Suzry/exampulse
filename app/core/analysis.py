@@ -243,7 +243,7 @@ def _flags_and_summary(
 
     return (
         ["no major flags"],
-        "No major physiological load indicators stood out before this exam.",
+        "No major physiological stress indicators stood out before this exam.",
     )
 
 

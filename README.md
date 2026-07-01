@@ -123,9 +123,9 @@ instead of the terminal dashboard, for scripting or feeding into another tool.
 By default `exampulse report` prints a tight, scannable dashboard — no noise:
 
 - `[whoop]` / `[exams]` / `[run]` process lines summarize the run.
-- **EXAM STRESS** — one borderless, color-coded row per exam (ranked by load):
-  load, hours **awake** before the exam, sleep vs baseline, recovery, HRV delta,
-  and an inline load bar.
+- **EXAM STRESS** — one borderless, color-coded row per exam (ranked by
+  stress): the Physiological Stress Index, hours **awake** before the exam,
+  sleep vs baseline, recovery, HRV delta, and an inline stress bar.
 - **READINESS** — a diverging bar chart of each exam's readiness around the 50
   midpoint (green = ready, red = low).
 

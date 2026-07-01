@@ -114,12 +114,12 @@ def _strain_pressure(previous_strain: float | int | None) -> StressComponent:
 def classify_stress(score: int | float) -> str:
     clamped = _clamp_score(int(round(score)))
     if clamped <= 24:
-        return "calm"
+        return "low stress"
     if clamped <= 49:
-        return "mild load"
+        return "mild stress"
     if clamped <= 74:
-        return "elevated"
-    return "high load"
+        return "elevated stress"
+    return "high stress"
 
 
 def top_stress_drivers(
