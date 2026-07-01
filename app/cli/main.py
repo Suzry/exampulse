@@ -1328,6 +1328,7 @@ def _print_compact_exam_detail(
         f"[{load_color}]{stress_bar(stress.score if stress else None, width=12)}[/]"
     )
     console.print(f"[dim]{'note':<10}[/dim] {escape(result.summary)}")
+    _print_result_line(result)
     _print_pre_exam_hr_line(pre_exam_hr)
     _print_exam_raw_hr_line(raw_hr)
     _print_exam_hr_line(activity_hr)
@@ -1358,6 +1359,15 @@ def _print_awake_line(result: ExamReadiness) -> None:
             "sleep, hours earlier)[/dim]"
         )
     console.print(f"[dim]{'awake':<10}[/dim] [{style}]{verdict}[/{style}]{note}")
+
+
+def _print_result_line(result: ExamReadiness) -> None:
+    exam = result.exam
+    if exam.grade is None and not exam.letter_grade:
+        return
+    grade_text = f"{exam.grade:g}" if exam.grade is not None else "n/a"
+    letter_text = f" ({exam.letter_grade})" if exam.letter_grade else ""
+    console.print(f"[dim]{'result':<10}[/dim] [bold]{grade_text}{letter_text}[/bold]")
 
 
 def _print_pre_exam_hr_line(pre_exam_hr: PreExamHR | None) -> None:

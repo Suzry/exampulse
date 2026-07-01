@@ -189,6 +189,30 @@ def test_full_report_includes_detail_sections(monkeypatch) -> None:
     assert "STRESS DRIVERS" in output
 
 
+def test_full_report_shows_result_line_when_grade_present(monkeypatch) -> None:
+    test_console = Console(record=True, width=100, color_system=None)
+    monkeypatch.setattr(cli_main, "console", test_console)
+
+    result = _analyzed_result()
+    result.exam.grade = 92
+    result.exam.letter_grade = "A"
+    cli_main._print_compact_report([result], sync_run=None, full=True)
+    output = test_console.export_text()
+
+    assert "result" in output.casefold()
+    assert "92 (A)" in output
+
+
+def test_full_report_omits_result_line_without_grade(monkeypatch) -> None:
+    test_console = Console(record=True, width=100, color_system=None)
+    monkeypatch.setattr(cli_main, "console", test_console)
+
+    cli_main._print_compact_report([_analyzed_result()], sync_run=None, full=True)
+    output = test_console.export_text()
+
+    assert "result" not in output.casefold()
+
+
 def test_upcoming_exams_do_not_fake_sleep_hr_values(monkeypatch) -> None:
     test_console = Console(record=True, width=100, color_system=None)
     monkeypatch.setattr(cli_main, "console", test_console)
