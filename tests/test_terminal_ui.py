@@ -3,9 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 
-from rich.console import Console
-
-import app.cli.main as cli_main
+from app.cli.views import report_view
 from app.core.analysis import ExamReadiness
 from app.core.models import Exam, WhoopCycle, WhoopRecovery
 from app.utils.terminal_ui import (
@@ -17,6 +15,7 @@ from app.utils.terminal_ui import (
     value_color,
     zscore_color,
 )
+from tests.conftest import patch_console
 
 
 def _upcoming_result() -> ExamReadiness:
@@ -146,10 +145,9 @@ def test_extract_room_from_notes() -> None:
 
 
 def test_compact_report_shows_upcoming_without_fake_detail_fields(monkeypatch) -> None:
-    test_console = Console(record=True, width=100, color_system=None)
-    monkeypatch.setattr(cli_main, "console", test_console)
+    test_console = patch_console(monkeypatch)
 
-    cli_main._print_compact_report([_upcoming_result()], sync_run=None, full=True)
+    report_view.print_compact_report([_upcoming_result()], sync_run=None, full=True)
     output = test_console.export_text()
 
     assert "upcoming" in output.casefold()
@@ -163,10 +161,9 @@ def test_compact_report_shows_upcoming_without_fake_detail_fields(monkeypatch) -
 
 
 def test_brief_report_is_a_single_table_without_detail_sections(monkeypatch) -> None:
-    test_console = Console(record=True, width=100, color_system=None)
-    monkeypatch.setattr(cli_main, "console", test_console)
+    test_console = patch_console(monkeypatch)
 
-    cli_main._print_compact_report([_analyzed_result()], sync_run=None)
+    report_view.print_compact_report([_analyzed_result()], sync_run=None)
     output = test_console.export_text()
 
     # The concise default shows the brief stress table...
@@ -180,10 +177,9 @@ def test_brief_report_is_a_single_table_without_detail_sections(monkeypatch) -> 
 
 
 def test_full_report_includes_detail_sections(monkeypatch) -> None:
-    test_console = Console(record=True, width=100, color_system=None)
-    monkeypatch.setattr(cli_main, "console", test_console)
+    test_console = patch_console(monkeypatch)
 
-    cli_main._print_compact_report([_analyzed_result()], sync_run=None, full=True)
+    report_view.print_compact_report([_analyzed_result()], sync_run=None, full=True)
     output = test_console.export_text()
 
     assert "EXAM DETAIL" in output
@@ -191,13 +187,12 @@ def test_full_report_includes_detail_sections(monkeypatch) -> None:
 
 
 def test_full_report_shows_result_line_when_grade_present(monkeypatch) -> None:
-    test_console = Console(record=True, width=100, color_system=None)
-    monkeypatch.setattr(cli_main, "console", test_console)
+    test_console = patch_console(monkeypatch)
 
     result = _analyzed_result()
     result.exam.grade = 92
     result.exam.letter_grade = "A"
-    cli_main._print_compact_report([result], sync_run=None, full=True)
+    report_view.print_compact_report([result], sync_run=None, full=True)
     output = test_console.export_text()
 
     assert "result" in output.casefold()
@@ -205,10 +200,9 @@ def test_full_report_shows_result_line_when_grade_present(monkeypatch) -> None:
 
 
 def test_full_report_omits_result_line_without_grade(monkeypatch) -> None:
-    test_console = Console(record=True, width=100, color_system=None)
-    monkeypatch.setattr(cli_main, "console", test_console)
+    test_console = patch_console(monkeypatch)
 
-    cli_main._print_compact_report([_analyzed_result()], sync_run=None, full=True)
+    report_view.print_compact_report([_analyzed_result()], sync_run=None, full=True)
     output = test_console.export_text()
 
     assert "result" not in output.casefold()
@@ -218,7 +212,7 @@ def test_result_to_json_includes_grade_and_stress() -> None:
     result = _analyzed_result()
     result.exam.grade = 92
     result.exam.letter_grade = "A"
-    payload = cli_main._result_to_json(result)
+    payload = report_view.result_to_json(result)
 
     assert payload["course"] == "Differential equations and Linear Algebra"
     assert payload["status"] == "analyzed"
@@ -228,7 +222,7 @@ def test_result_to_json_includes_grade_and_stress() -> None:
 
 
 def test_result_to_json_marks_upcoming_without_stress() -> None:
-    payload = cli_main._result_to_json(_upcoming_result())
+    payload = report_view.result_to_json(_upcoming_result())
 
     assert payload["status"] == "upcoming"
     assert payload["physiological_stress"] is None
@@ -238,7 +232,7 @@ def test_result_to_json_marks_upcoming_without_stress() -> None:
 def test_print_report_json_emits_parseable_json_with_long_summaries(capsys) -> None:
     # A long summary line is exactly what triggers Rich's soft-wrap corruption
     # if _print_report_json ever goes back to console.print() for this path.
-    cli_main._print_report_json([_analyzed_result(), _upcoming_result()])
+    report_view.print_report_json([_analyzed_result(), _upcoming_result()])
     payload = json.loads(capsys.readouterr().out)
 
     assert len(payload) == 2
@@ -246,10 +240,9 @@ def test_print_report_json_emits_parseable_json_with_long_summaries(capsys) -> N
 
 
 def test_upcoming_exams_do_not_fake_sleep_hr_values(monkeypatch) -> None:
-    test_console = Console(record=True, width=100, color_system=None)
-    monkeypatch.setattr(cli_main, "console", test_console)
+    test_console = patch_console(monkeypatch)
 
-    cli_main._print_compact_report([_upcoming_result()], sync_run=None, full=True)
+    report_view.print_compact_report([_upcoming_result()], sync_run=None, full=True)
     output = test_console.export_text()
 
     assert "pending night-before sleep stream data" in output
@@ -258,10 +251,9 @@ def test_upcoming_exams_do_not_fake_sleep_hr_values(monkeypatch) -> None:
 
 
 def test_compact_report_keeps_upcoming_out_of_stress_drivers(monkeypatch) -> None:
-    test_console = Console(record=True, width=100, color_system=None)
-    monkeypatch.setattr(cli_main, "console", test_console)
+    test_console = patch_console(monkeypatch)
 
-    cli_main._print_compact_report(
+    report_view.print_compact_report(
         [_analyzed_result(), _upcoming_result()], sync_run=None, full=True
     )
     output = test_console.export_text()

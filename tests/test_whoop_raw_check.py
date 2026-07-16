@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from rich.console import Console
 from sqlmodel import Session, SQLModel, create_engine
 
-import app.cli.main as cli_main
+from app.cli.views import report_view, whoop_views
 from app.core.analysis import ExamReadiness
 from app.core.models import Exam
 from app.integrations.whoop_client import WhoopAPIError
 from app.services.whoop_raw_check_service import WhoopRawCheckService
+from tests.conftest import patch_console
 
 
 class ForbiddenStreamClient:
@@ -66,9 +66,8 @@ def test_raw_check_redacts_ids_and_does_not_print_secrets(monkeypatch) -> None:
     with _session() as session:
         result = WhoopRawCheckService(session, client=ForbiddenStreamClient()).check()
 
-    test_console = Console(record=True, width=120, color_system=None)
-    monkeypatch.setattr(cli_main, "console", test_console)
-    cli_main._print_whoop_raw_check(result)
+    test_console = patch_console(monkeypatch, width=120)
+    whoop_views.print_whoop_raw_check(result)
     output = test_console.export_text()
 
     assert "sleep-secret-full-id" not in output
@@ -80,10 +79,9 @@ def test_raw_check_redacts_ids_and_does_not_print_secrets(monkeypatch) -> None:
 
 
 def test_report_shows_forbidden_sleep_stream_status(monkeypatch) -> None:
-    test_console = Console(record=True, width=120, color_system=None)
-    monkeypatch.setattr(cli_main, "console", test_console)
+    test_console = patch_console(monkeypatch, width=120)
 
-    cli_main._print_compact_report(
+    report_view.print_compact_report(
         [_upcoming_result()],
         sync_run=None,
         sleep_stream_forbidden=True,

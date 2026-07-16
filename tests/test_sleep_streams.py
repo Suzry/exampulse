@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from rich.console import Console
 from sqlmodel import Session, SQLModel, create_engine
 
-import app.cli.main as cli_main
+from app.cli.views import report_view
 from app.core.analysis import ExamReadiness
 from app.core.models import Exam, WhoopSleep, WhoopSleepStreamPoint
 from app.core.night_hr import analyze_night_hr_signal
@@ -14,6 +13,7 @@ from app.storage.repositories import (
     list_sleep_stream_points,
     upsert_sleep_stream_points,
 )
+from tests.conftest import patch_console
 
 
 def _session():
@@ -120,10 +120,9 @@ def test_sleep_stream_analysis_with_baseline() -> None:
 def test_missing_sleep_stream_data_does_not_crash_compact_report(monkeypatch) -> None:
     exam_at = datetime(2026, 6, 18, 10, tzinfo=UTC)
     sleep = _sleep("night", exam_at - timedelta(hours=9), exam_at - timedelta(hours=1))
-    test_console = Console(record=True, width=100, color_system=None)
-    monkeypatch.setattr(cli_main, "console", test_console)
+    test_console = patch_console(monkeypatch)
 
-    cli_main._print_compact_report(
+    report_view.print_compact_report(
         [_result(exam_at, sleep)], sync_run=None, sleeps=[sleep], full=True
     )
     output = test_console.export_text()

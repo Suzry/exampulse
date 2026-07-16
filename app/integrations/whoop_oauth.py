@@ -89,7 +89,8 @@ def run_local_oauth_flow(
     settings: Settings | None = None,
     console: Console | None = None,
 ) -> None:
-    settings = settings or get_settings()
+    settings = settings if settings is not None else get_settings()
+    active_settings: Settings = settings
     console = console or Console()
     if not settings.whoop_client_id or not settings.whoop_client_secret:
         raise OAuthError("Set WHOOP_CLIENT_ID and WHOOP_CLIENT_SECRET in `.env` first.")
@@ -103,7 +104,7 @@ def run_local_oauth_flow(
 
         def do_GET(self):  # noqa: N802
             parsed = urlparse(self.path)
-            if parsed.path != settings.callback_path:
+            if parsed.path != active_settings.callback_path:
                 self.send_response(404)
                 self.end_headers()
                 return

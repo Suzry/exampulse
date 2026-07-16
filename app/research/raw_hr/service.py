@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -88,7 +89,7 @@ _HR_ALIASES = (
 
 
 def _resolve_column(
-    fieldnames: list[str], requested: str | None, aliases: tuple[str, ...], label: str
+    fieldnames: Sequence[str], requested: str | None, aliases: tuple[str, ...], label: str
 ) -> str:
     lookup = {(name or "").strip().casefold(): name for name in fieldnames}
     if requested:

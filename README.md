@@ -90,6 +90,18 @@ result is out). Then import it:
 exampulse exams import exams.json
 ```
 
+You can also import straight from a calendar. If your university publishes the
+exam schedule as iCal (or you keep it in Google/Apple Calendar), export it as
+`.ics` and import it directly — `SUMMARY` becomes the course, `LOCATION` and
+`DESCRIPTION` land in notes:
+
+```bash
+exampulse exams import exam-schedule.ics
+```
+
+All-day events and events without timezone information are rejected rather
+than silently guessed, because a wrong exam time corrupts every night match.
+
 If you just want to try the tool without WHOOP or a schedule, run
 `exampulse demo-seed` to generate 30 days of realistic offline data plus a
 small demo exam schedule.
@@ -104,19 +116,77 @@ exampulse sync --days 30 --streams
 exampulse whoop raw-check
 exampulse whoop import-export my_whoop_data.zip
 exampulse whoop exam-hr
+exampulse apple import-export export.zip
 exampulse exams import exams.json
+exampulse exams import exam-schedule.ics
 exampulse exams list
 exampulse exams list --json
 exampulse today --compact
+exampulse plan
+exampulse week --days 7
 exampulse report
 exampulse report --classic
 exampulse report --json
+exampulse correlate
+exampulse semester --output semester-report.md
 exampulse export
 exampulse watch --every 30
+exampulse --version
 ```
 
 `--json` on `report` and `exams list` prints machine-readable JSON to stdout
 instead of the terminal dashboard, for scripting or feeding into another tool.
+
+## Planning ahead: `plan` and `week`
+
+The report tells you what happened; `plan` tells you what to do **tonight**.
+For every upcoming exam it derives, from your own baseline:
+
+- a **target sleep** (your baseline median, not a universal 8h rule),
+- a **bedtime / wake target** that leaves a prep buffer before the exam
+  (default 2h, tune with `--prep-buffer`),
+- how that bedtime compares to your **usual** bedtime,
+- a **readiness projection** assuming tonight matches your baseline and your
+  recent 3-night recovery/HRV/RHR trend holds — labeled as a projection, never
+  as a measurement.
+
+The exam that needs tonight's sleep is tagged `TONIGHT`. `exampulse week`
+shows the same schedule as a day-by-day view and both commands flag **short
+recovery windows** — back-to-back exams where the night between them cannot
+physically fit your target sleep, so you know to bank sleep the night before.
+
+## Grades vs physiology: `correlate` and `semester`
+
+Once results are in, fill `grade` in `exams.json` and re-import. Then:
+
+- `exampulse correlate` pairs each graded exam with its night-before readiness,
+  stress index, and sleep debt, computes Pearson and Spearman correlations, and
+  draws a terminal scatter plot. With few exams it says so loudly — small
+  samples are labeled as anecdotes, not evidence.
+- `exampulse semester` writes a markdown end-of-term report: average readiness,
+  best/worst night, recurring pressure points (e.g. "low sleep — 4 exams"),
+  the grade correlations, and method notes. Use `--stdout` to print instead of
+  writing a file.
+
+## Apple Watch instead of WHOOP
+
+Exampulse can run entirely from an Apple Health export — no WHOOP account
+needed. On the iPhone: Health app → profile picture → *Export All Health
+Data*, then:
+
+```bash
+exampulse apple import-export export.zip   # or the unzipped folder / export.xml
+exampulse exams import exams.json
+exampulse report
+```
+
+Sleep sessions (with REM/deep/core stages when the watch provides them),
+nightly HRV, and resting heart rate are imported into the same tables the
+report reads. Overlapping watch + phone records are merged, not double-counted,
+and re-importing is idempotent. Two honest caveats: Apple has no recovery
+score (that readiness component is skipped and the weights renormalize), and
+Apple reports HRV as SDNN while WHOOP uses RMSSD — absolute values differ, but
+deltas against your own baseline from the same source stay meaningful.
 
 ## Reading the report
 
@@ -129,7 +199,7 @@ By default `exampulse report` prints a tight, scannable dashboard — no noise:
 - **READINESS** — a diverging bar chart of each exam's readiness around the 50
   midpoint (green = ready, red = low).
 
-Add `--full` for the deep view: per-metric `mean ± σ`, deltas, 14-day **trend
+Add `--full` for the deep view: per-metric `median ± σ̂`, deltas, 14-day **trend
 sparklines**, **z-scores** and percentile ranks, the **stress-driver** breakdown,
 and all heart-rate signals (`awake`, `night arousal`, `pre-exam`, `hr/min`,
 `NIGHT HR SIGNAL`).
@@ -141,8 +211,14 @@ exampulse report --classic # plain boxed layout
 ```
 
 The night-before sleep is excluded from its own baseline so the comparison is
-against the *other* nights. Colors and box-drawing degrade gracefully to ASCII
-on terminals without UTF-8.
+against the *other* nights. Baselines use the **median** and a MAD-based sigma
+rather than mean ± std, so a single all-nighter inside the window can't drag
+your baseline around. When the baseline has fewer than 5 nights, z-scores and
+percentiles are withheld (the deltas still show) instead of pretending thin
+data is statistically confident. Both knobs are configurable via environment
+variables: `EXAMPULSE_BASELINE_DAYS` (default 14) and
+`EXAMPULSE_MIN_BASELINE_NIGHTS` (default 5). Colors and box-drawing degrade
+gracefully to ASCII on terminals without UTF-8.
 
 ## Heart rate during the exam (WHOOP data export)
 
@@ -294,9 +370,18 @@ natural follow-ups because the CLI only calls service-layer code.
 
 ```bash
 pip install -e ".[dev]"
-pytest          # run the test suite
+pytest          # run the test suite (includes hypothesis property tests)
 ruff check .    # lint
+mypy app        # type-check
 ```
+
+CI runs all three on Python 3.11–3.13. `requirements.lock` is a pip-freeze
+snapshot of a known-good environment; regenerate it after dependency changes
+with `pip freeze --exclude-editable > requirements.lock`.
+
+Scoring weights, stress thresholds, and baseline settings all live in one
+place: `app/core/scoring.py` (`ScoringConfig`). The CLI in `app/cli/main.py`
+is thin; all terminal rendering lives in `app/cli/views/`.
 
 ## License
 

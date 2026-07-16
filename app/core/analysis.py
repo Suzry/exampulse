@@ -2,10 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import timedelta
-from statistics import mean, pstdev
+from statistics import median
 
 from app.core.models import Exam, WhoopCycle, WhoopRecovery, WhoopSleep
+from app.core.scoring import ScoringConfig, get_scoring_config
 from app.utils.time import to_utc
+
+# Scale factor that makes the median absolute deviation a consistent
+# estimator of the standard deviation for normal data.
+_MAD_TO_SIGMA = 1.4826
 
 
 @dataclass(slots=True)
@@ -48,25 +53,30 @@ def clamp(value: float, lower: float = 0, upper: float = 100) -> float:
     return max(lower, min(upper, value))
 
 
-def _avg(values: list[float | int | None]) -> float | None:
+def _center(values: list[float | int | None]) -> float | None:
+    """Baseline center: the median, so one all-nighter can't drag it."""
     usable = [float(value) for value in values if value is not None]
-    return mean(usable) if usable else None
+    return median(usable) if usable else None
 
 
-def _std(values: list[float | int | None]) -> float | None:
-    """Population standard deviation; needs at least two samples."""
+def _spread(values: list[float | int | None]) -> float | None:
+    """Robust sigma estimate from the MAD; needs at least two samples."""
     usable = [float(value) for value in values if value is not None]
-    return pstdev(usable) if len(usable) >= 2 else None
+    if len(usable) < 2:
+        return None
+    center = median(usable)
+    mad = median([abs(value - center) for value in usable])
+    return mad * _MAD_TO_SIGMA
 
 
 def _zscore(
     value: float | None,
-    baseline_mean: float | None,
-    baseline_std: float | None,
+    baseline_center: float | None,
+    baseline_spread: float | None,
 ) -> float | None:
-    if value is None or baseline_mean is None or not baseline_std:
+    if value is None or baseline_center is None or not baseline_spread:
         return None
-    return (value - baseline_mean) / baseline_std
+    return (value - baseline_center) / baseline_spread
 
 
 def _percentile_rank(value: float | None, values: list[float | int | None]) -> float | None:
@@ -113,40 +123,20 @@ def _last_cycle_before(exam_at, cycles: list[WhoopCycle]) -> WhoopCycle | None:
     ]
     if not candidates:
         return None
-    return max(candidates, key=lambda cycle: to_utc(cycle.end))
+    return max(candidates, key=lambda cycle: to_utc(cycle.end or cycle.start))
 
 
-def _baseline_sleeps(exam_at, sleeps: list[WhoopSleep]) -> list[WhoopSleep]:
+def _baseline_sleeps(
+    exam_at, sleeps: list[WhoopSleep], window_days: int
+) -> list[WhoopSleep]:
     exam_at_utc = to_utc(exam_at)
-    start = exam_at_utc - timedelta(days=14)
+    start = exam_at_utc - timedelta(days=window_days)
     return [
         sleep
         for sleep in sleeps
         if sleep.score_state == "SCORED"
         and not sleep.nap
         and start <= to_utc(sleep.end) < exam_at_utc
-    ]
-
-
-def _recovery_for_sleep(
-    sleep: WhoopSleep | None, recoveries: list[WhoopRecovery]
-) -> WhoopRecovery | None:
-    if sleep is None:
-        return None
-    for recovery in recoveries:
-        if recovery.sleep_id == sleep.id and recovery.score_state == "SCORED":
-            return recovery
-    return None
-
-
-def _baseline_recoveries(
-    baseline_sleeps: list[WhoopSleep], recoveries: list[WhoopRecovery]
-) -> list[WhoopRecovery]:
-    sleep_ids = {sleep.id for sleep in baseline_sleeps}
-    return [
-        recovery
-        for recovery in recoveries
-        if recovery.score_state == "SCORED" and recovery.sleep_id in sleep_ids
     ]
 
 
@@ -178,16 +168,18 @@ def _rhr_score(rhr_delta_bpm: float | None) -> float | None:
 
 
 def _weighted_score(
+    *,
     recovery_score: float | None,
     sleep_score: float | None,
     hrv_score: float | None,
     rhr_score: float | None,
+    config: ScoringConfig,
 ) -> float | None:
     components = [
-        (0.40, recovery_score),
-        (0.25, sleep_score),
-        (0.20, hrv_score),
-        (0.15, rhr_score),
+        (config.recovery_weight, recovery_score),
+        (config.sleep_weight, sleep_score),
+        (config.hrv_weight, hrv_score),
+        (config.rhr_weight, rhr_score),
     ]
     usable = [(weight, score) for weight, score in components if score is not None]
     if not usable:
@@ -196,12 +188,13 @@ def _weighted_score(
     return sum(weight * float(score) for weight, score in usable) / total_weight
 
 
-def classify_readiness(score: float | None) -> str:
+def classify_readiness(score: float | None, config: ScoringConfig | None = None) -> str:
+    config = config or get_scoring_config()
     if score is None:
         return "UNKNOWN"
-    if score < 40:
+    if score < config.readiness_low_below:
         return "LOW"
-    if score < 70:
+    if score < config.readiness_moderate_below:
         return "MODERATE"
     return "GOOD"
 
@@ -214,6 +207,7 @@ def _flags_and_summary(
     hrv_delta: float | None,
     rhr_delta: float | None,
     previous_cycle: WhoopCycle | None,
+    config: ScoringConfig,
 ) -> tuple[list[str], str]:
     if sleep is None:
         return (
@@ -222,15 +216,23 @@ def _flags_and_summary(
         )
 
     flags: list[str] = []
-    if sleep_debt is not None and sleep_debt <= -90:
+    if sleep_debt is not None and sleep_debt <= config.flag_sleep_debt_minutes:
         flags.append("low sleep")
-    if recovery and recovery.recovery_score is not None and recovery.recovery_score < 40:
+    if (
+        recovery
+        and recovery.recovery_score is not None
+        and recovery.recovery_score < config.flag_recovery_below
+    ):
         flags.append("low recovery")
-    if hrv_delta is not None and hrv_delta <= -15:
+    if hrv_delta is not None and hrv_delta <= config.flag_hrv_delta_percent:
         flags.append("HRV below baseline")
-    if rhr_delta is not None and rhr_delta >= 5:
+    if rhr_delta is not None and rhr_delta >= config.flag_rhr_delta_bpm:
         flags.append("elevated resting HR")
-    if previous_cycle and previous_cycle.strain is not None and previous_cycle.strain >= 14:
+    if (
+        previous_cycle
+        and previous_cycle.strain is not None
+        and previous_cycle.strain >= config.flag_previous_strain
+    ):
         flags.append("high previous strain")
 
     if flags:
@@ -252,17 +254,31 @@ def analyze_exam(
     sleeps: list[WhoopSleep],
     recoveries: list[WhoopRecovery],
     cycles: list[WhoopCycle],
+    config: ScoringConfig | None = None,
 ) -> ExamReadiness:
+    config = config or get_scoring_config()
+    recovery_by_sleep_id = {
+        recovery.sleep_id: recovery
+        for recovery in recoveries
+        if recovery.score_state == "SCORED"
+    }
+
     sleep = _last_sleep_before(exam.exam_at, sleeps)
-    recovery = _recovery_for_sleep(sleep, recoveries)
+    recovery = recovery_by_sleep_id.get(sleep.id) if sleep is not None else None
     previous_cycle = _last_cycle_before(exam.exam_at, cycles)
 
-    baseline_sleeps = _baseline_sleeps(exam.exam_at, sleeps)
-    # The night-before sleep falls inside the 14-day window; exclude it so the
+    baseline_sleeps = _baseline_sleeps(
+        exam.exam_at, sleeps, config.baseline_window_days
+    )
+    # The night-before sleep falls inside the baseline window; exclude it so the
     # baseline (and z-scores/percentiles) compare it against the *other* nights.
     if sleep is not None:
         baseline_sleeps = [night for night in baseline_sleeps if night.id != sleep.id]
-    baseline_recoveries = _baseline_recoveries(baseline_sleeps, recoveries)
+    baseline_recoveries = [
+        recovery_by_sleep_id[night.id]
+        for night in baseline_sleeps
+        if night.id in recovery_by_sleep_id
+    ]
 
     sleep_minutes = _sleep_minutes(sleep)
     awake_hours_before = (
@@ -273,7 +289,6 @@ def analyze_exam(
 
     # Chronological baseline series (oldest -> newest) for trend sparklines.
     ordered_sleeps = sorted(baseline_sleeps, key=lambda item: to_utc(item.end))
-    recovery_by_sleep = {item.sleep_id: item for item in baseline_recoveries}
     sleep_series: list[float] = []
     recovery_series: list[float] = []
     hrv_series: list[float] = []
@@ -282,7 +297,7 @@ def analyze_exam(
         night_minutes = _sleep_minutes(night)
         if night_minutes is not None:
             sleep_series.append(night_minutes)
-        linked = recovery_by_sleep.get(night.id)
+        linked = recovery_by_sleep_id.get(night.id)
         if linked is None:
             continue
         if linked.recovery_score is not None:
@@ -292,22 +307,22 @@ def analyze_exam(
         if linked.resting_heart_rate is not None:
             rhr_series.append(float(linked.resting_heart_rate))
 
-    baseline_sleep = _avg([_sleep_minutes(sleep) for sleep in baseline_sleeps])
-    baseline_recovery = _avg(
+    baseline_sleep = _center([_sleep_minutes(sleep) for sleep in baseline_sleeps])
+    baseline_recovery = _center(
         [recovery.recovery_score for recovery in baseline_recoveries]
     )
-    baseline_hrv = _avg([recovery.hrv_rmssd_milli for recovery in baseline_recoveries])
-    baseline_rhr = _avg(
+    baseline_hrv = _center([recovery.hrv_rmssd_milli for recovery in baseline_recoveries])
+    baseline_rhr = _center(
         [recovery.resting_heart_rate for recovery in baseline_recoveries]
     )
-    baseline_sleep_std = _std([_sleep_minutes(sleep) for sleep in baseline_sleeps])
-    baseline_recovery_std = _std(
+    baseline_sleep_std = _spread([_sleep_minutes(sleep) for sleep in baseline_sleeps])
+    baseline_recovery_std = _spread(
         [recovery.recovery_score for recovery in baseline_recoveries]
     )
-    baseline_hrv_std = _std(
+    baseline_hrv_std = _spread(
         [recovery.hrv_rmssd_milli for recovery in baseline_recoveries]
     )
-    baseline_rhr_std = _std(
+    baseline_rhr_std = _spread(
         [recovery.resting_heart_rate for recovery in baseline_recoveries]
     )
 
@@ -344,13 +359,19 @@ def analyze_exam(
     )
     rhr_delta = rhr - baseline_rhr if rhr is not None and baseline_rhr is not None else None
 
-    sleep_z = _zscore(sleep_minutes, baseline_sleep, baseline_sleep_std)
-    recovery_z = _zscore(recovery_score, baseline_recovery, baseline_recovery_std)
-    hrv_z = _zscore(hrv, baseline_hrv, baseline_hrv_std)
-    rhr_z = _zscore(rhr, baseline_rhr, baseline_rhr_std)
-    recovery_percentile = _percentile_rank(
-        recovery_score, [item.recovery_score for item in baseline_recoveries]
-    )
+    # A thin baseline can't support statistical claims: keep the raw deltas
+    # but withhold z-scores and percentiles below the minimum night count.
+    if len(baseline_sleeps) >= config.min_baseline_nights:
+        sleep_z = _zscore(sleep_minutes, baseline_sleep, baseline_sleep_std)
+        recovery_z = _zscore(recovery_score, baseline_recovery, baseline_recovery_std)
+        hrv_z = _zscore(hrv, baseline_hrv, baseline_hrv_std)
+        rhr_z = _zscore(rhr, baseline_rhr, baseline_rhr_std)
+        recovery_percentile = _percentile_rank(
+            recovery_score, [item.recovery_score for item in baseline_recoveries]
+        )
+    else:
+        sleep_z = recovery_z = hrv_z = rhr_z = None
+        recovery_percentile = None
 
     # Append the night-before value as the final point so trends show the dip.
     if sleep_minutes is not None:
@@ -367,8 +388,9 @@ def analyze_exam(
         sleep_score=_sleep_score(sleep, sleep_minutes, baseline_sleep),
         hrv_score=_hrv_score(hrv_delta),
         rhr_score=_rhr_score(rhr_delta),
+        config=config,
     )
-    label = classify_readiness(readiness)
+    label = classify_readiness(readiness, config)
     flags, summary = _flags_and_summary(
         sleep=sleep,
         recovery=recovery,
@@ -376,6 +398,7 @@ def analyze_exam(
         hrv_delta=hrv_delta,
         rhr_delta=rhr_delta,
         previous_cycle=previous_cycle,
+        config=config,
     )
 
     return ExamReadiness(

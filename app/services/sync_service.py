@@ -199,7 +199,7 @@ def _extract_hr_stream_points(payload) -> list[dict]:
         if isinstance(item, dict):
             timestamp = item.get("timestamp") or item.get("time") or item.get("datetime")
             hr = item.get("hr") or item.get("heart_rate") or item.get("value")
-            is_sleeping = item.get("is_sleeping", item.get("isSleeping", True))
+            is_sleeping = bool(item.get("is_sleeping", item.get("isSleeping", True)))
         elif isinstance(item, (list, tuple)) and len(item) >= 2:
             timestamp, hr = item[0], item[1]
             if len(item) >= 3:

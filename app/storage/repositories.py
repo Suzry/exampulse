@@ -4,7 +4,7 @@ import json
 from datetime import timedelta
 from typing import Any
 
-from sqlmodel import Session, delete, desc, select
+from sqlmodel import Session, col, delete, desc, select
 
 from app.core.models import (
     Exam,
@@ -80,7 +80,7 @@ def upsert_sleep(session: Session, payload: dict[str, Any]) -> WhoopSleep:
     slow_minutes = _minutes_from_millis(stage.get("total_slow_wave_sleep_time_milli"))
     rem_minutes = _minutes_from_millis(stage.get("total_rem_sleep_time_milli"))
     total_sleep_minutes = None
-    if None not in (light_minutes, slow_minutes, rem_minutes):
+    if light_minutes is not None and slow_minutes is not None and rem_minutes is not None:
         total_sleep_minutes = light_minutes + slow_minutes + rem_minutes
 
     sleep = session.get(WhoopSleep, payload["id"])
@@ -252,7 +252,7 @@ def upsert_exam(
 
 
 def list_exams(session: Session) -> list[Exam]:
-    return list(session.exec(select(Exam).order_by(Exam.exam_at)))
+    return list(session.exec(select(Exam).order_by(col(Exam.exam_at))))
 
 
 def delete_all_exams(session: Session) -> None:
@@ -262,7 +262,7 @@ def delete_all_exams(session: Session) -> None:
 
 
 def list_sleeps(session: Session) -> list[WhoopSleep]:
-    return list(session.exec(select(WhoopSleep).order_by(WhoopSleep.end)))
+    return list(session.exec(select(WhoopSleep).order_by(col(WhoopSleep.end))))
 
 
 def list_recoveries(session: Session) -> list[WhoopRecovery]:
@@ -270,7 +270,7 @@ def list_recoveries(session: Session) -> list[WhoopRecovery]:
 
 
 def list_cycles(session: Session) -> list[WhoopCycle]:
-    return list(session.exec(select(WhoopCycle).order_by(WhoopCycle.start)))
+    return list(session.exec(select(WhoopCycle).order_by(col(WhoopCycle.start))))
 
 
 def list_sleep_stream_points(
@@ -281,7 +281,7 @@ def list_sleep_stream_points(
     statement = select(WhoopSleepStreamPoint)
     if sleep_id is not None:
         statement = statement.where(WhoopSleepStreamPoint.sleep_id == sleep_id)
-    return list(session.exec(statement.order_by(WhoopSleepStreamPoint.timestamp)))
+    return list(session.exec(statement.order_by(col(WhoopSleepStreamPoint.timestamp))))
 
 
 def upsert_research_raw_hr_points(
@@ -321,7 +321,7 @@ def list_research_raw_hr_points(
     statement = select(ResearchRawHRPoint)
     if source is not None:
         statement = statement.where(ResearchRawHRPoint.source == source)
-    return list(session.exec(statement.order_by(ResearchRawHRPoint.timestamp)))
+    return list(session.exec(statement.order_by(col(ResearchRawHRPoint.timestamp))))
 
 
 def upsert_whoop_workouts(
@@ -366,7 +366,7 @@ def upsert_whoop_workouts(
 
 
 def list_whoop_workouts(session: Session) -> list[WhoopWorkout]:
-    return list(session.exec(select(WhoopWorkout).order_by(WhoopWorkout.start)))
+    return list(session.exec(select(WhoopWorkout).order_by(col(WhoopWorkout.start))))
 
 
 def delete_all_whoop_summary(session: Session) -> None:
@@ -515,16 +515,16 @@ def latest_whoop_raw_check(session: Session) -> SyncRun | None:
 def has_demo_data(session: Session) -> bool:
     demo_marker = '"source":"demo-seed"'
     sleep = session.exec(
-        select(WhoopSleep).where(WhoopSleep.raw_json.contains(demo_marker))
+        select(WhoopSleep).where(col(WhoopSleep.raw_json).contains(demo_marker))
     ).first()
     if sleep is not None:
         return True
     recovery = session.exec(
-        select(WhoopRecovery).where(WhoopRecovery.raw_json.contains(demo_marker))
+        select(WhoopRecovery).where(col(WhoopRecovery.raw_json).contains(demo_marker))
     ).first()
     if recovery is not None:
         return True
     cycle = session.exec(
-        select(WhoopCycle).where(WhoopCycle.raw_json.contains(demo_marker))
+        select(WhoopCycle).where(col(WhoopCycle.raw_json).contains(demo_marker))
     ).first()
     return cycle is not None

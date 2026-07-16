@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-import app.cli.main as cli_main
+from app.cli.views import report_view
 from app.core.analysis import ExamReadiness
 from app.core.models import Exam, ResearchRawHRPoint, WhoopSleep
 from app.core.night_hr import analyze_night_hr_from_raw
@@ -94,7 +94,7 @@ def test_night_arousal_verdict_flags_suppressed_hrv() -> None:
     result = _result(datetime(2026, 6, 15, 10, tzinfo=UTC), _sleep(1, datetime(2026, 6, 14, tzinfo=UTC)))
     result.hrv_delta_percent = -19.0
     result.rhr_delta_bpm = 3.0
-    verdict, style = cli_main._night_arousal(result)
+    verdict, style = report_view._night_arousal(result)
     assert "elevated" in verdict
     assert style == "red"
 
@@ -103,15 +103,15 @@ def test_night_arousal_verdict_calm() -> None:
     result = _result(datetime(2026, 6, 15, 10, tzinfo=UTC), _sleep(1, datetime(2026, 6, 14, tzinfo=UTC)))
     result.hrv_delta_percent = 1.0
     result.rhr_delta_bpm = 0.0
-    verdict, style = cli_main._night_arousal(result)
+    verdict, style = report_view._night_arousal(result)
     assert verdict == "calm"
     assert style == "green"
 
 
 def test_awake_verdict_thresholds() -> None:
-    assert cli_main._awake_verdict(None) == ("unknown", "dim")
-    assert cli_main._awake_verdict(8)[1] == "green"
-    assert cli_main._awake_verdict(15)[1] == "yellow"
-    assert cli_main._awake_verdict(20)[1] == "red"
-    assert "24h+" in cli_main._awake_verdict(30)[0]
-    assert "all-nighter" in cli_main._awake_verdict(20)[0]
+    assert report_view._awake_verdict(None) == ("unknown", "dim")
+    assert report_view._awake_verdict(8)[1] == "green"
+    assert report_view._awake_verdict(15)[1] == "yellow"
+    assert report_view._awake_verdict(20)[1] == "red"
+    assert "24h+" in report_view._awake_verdict(30)[0]
+    assert "all-nighter" in report_view._awake_verdict(20)[0]

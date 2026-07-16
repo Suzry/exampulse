@@ -2,14 +2,20 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from app.cli.main import (
-    _latest_cycle,
-    _latest_recovery,
-    _latest_sleep,
-    _next_upcoming_exam,
-    _remaining_text,
-)
+from app.cli.views.common import remaining_text as _remaining_text
 from app.core.models import Exam, WhoopCycle, WhoopRecovery, WhoopSleep
+from app.core.selectors import (
+    latest_cycle as _latest_cycle,
+)
+from app.core.selectors import (
+    latest_recovery as _latest_recovery,
+)
+from app.core.selectors import (
+    latest_sleep as _latest_sleep,
+)
+from app.core.selectors import (
+    next_upcoming_exam as _next_upcoming_exam,
+)
 
 
 def _sleep(index: int, end: datetime, minutes: int, nap: bool = False) -> WhoopSleep:

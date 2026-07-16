@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import sys
+from collections.abc import Sequence
 from datetime import datetime
 
 
@@ -81,7 +82,7 @@ _SPARK_TICKS_ASCII = "_.-=+*#"
 
 
 def sparkline(
-    values: list[float | int | None],
+    values: Sequence[float | int | None],
     unicode: bool | None = None,
 ) -> str:
     """Render a numeric series as a one-line sparkline.

@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from rich.console import Console
 from sqlmodel import Session, SQLModel, create_engine
 
-import app.cli.main as cli_main
+from app.cli.views import whoop_views
 from app.integrations.whoop_client import WhoopAPIError
 from app.services.sync_service import SyncService, redact_sleep_id
+from tests.conftest import patch_console
 
 
 class FailingStreamClient:
@@ -76,10 +76,9 @@ def test_tokens_and_authorization_headers_are_never_printed(monkeypatch) -> None
             days=30,
             streams=True,
         )
-    test_console = Console(record=True, width=120, color_system=None)
-    monkeypatch.setattr(cli_main, "console", test_console)
+    test_console = patch_console(monkeypatch, width=120)
 
-    cli_main._print_stream_error_samples(summary, debug=True)
+    whoop_views.print_stream_error_samples(summary, debug=True)
     output = test_console.export_text()
 
     assert "deactivated_user" in output
