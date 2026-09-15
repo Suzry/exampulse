@@ -1,0 +1,20 @@
+name: Project quality
+
+on:
+  pull_request:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: project-quality-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    uses: Suzry/github-workflows/.github/workflows/quality.yml@d746b8c70ee43ce8bb86e0eb45b2c4dc9334475f
+    # These existing workflows retain ownership of the project checks.
+    with:
+      delegated-workflows: '[".github/workflows/ci.yml"]'
